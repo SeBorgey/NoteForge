@@ -14,18 +14,19 @@ class NotebookTaskSplitter:
     Возвращает удобную структуру:
     [
       {
-        "label": "info" | "n_prog" | "r_prog" | "math" | "conclusion",
+        "label": "info" | "n_code" | "r_code" | "math" | "conclusion",
         "text": "<конкатенация исходного текста ячеек>",
         "cells": [
           {"index": int, "type": "markdown"|"code"|"raw", "source": str},
           ...
-        ]
+        ],
+        "need_conclusion": bool  # только для n_code/r_code; для остальных False
       },
       ...
     ]
     """
 
-    ALLOWED_LABELS = ("info", "n_prog", "r_prog", "math", "conclusion")
+    ALLOWED_LABELS = ("info", "n_code", "r_code", "math", "conclusion")
 
     def __init__(
         self,
@@ -158,8 +159,8 @@ class NotebookTaskSplitter:
         """
         labels_desc = (
             "- info: нет задания, просто информационные ячейки\n"
-            "- n_prog: нужно написать новый код, добавив новую ячейку\n"
-            "- r_prog: нужно дописать/исправить код в существующей ячейке\n"
+            "- n_code: нужно написать новый код, добавив новую ячейку (или используя плейсхолдер-код, если он есть)\n"
+            "- r_code: нужно дописать/исправить код в существующей ячейке\n"
             "- math: математическое решение/доказательство\n"
             "- conclusion: ответить на вопрос / сделать выводы"
         )
@@ -167,7 +168,7 @@ class NotebookTaskSplitter:
         example = {
             "segments": [
                 {"label": "info", "cell_indices": [0]},
-                {"label": "r_prog", "cell_indices": [1, 2]},
+                {"label": "r_code", "cell_indices": [1, 2], "need_conclusion": True},
                 {"label": "conclusion", "cell_indices": [3]}
             ]
         }
@@ -187,13 +188,15 @@ class NotebookTaskSplitter:
 - Каждый сегмент — непрерывный диапазон по индексам (если внутри типа встречаются разрывы, разбей это на несколько сегментов одного и того же label).
 - Если тип определить сложно — используй "info".
 - Не создавай пустые сегменты.
+- Для сегментов 'n_code' и 'r_code' добавь булев флаг "need_conclusion": true/false — требуется ли после кода сделать текстовые выводы, если отдельной ячейки для выводов нет.
 
 Формат ответа: верни строго JSON с ключом "segments", без комментариев, без markdown и без текста ячеек:
 {json.dumps(example, ensure_ascii=False, indent=2)}
 
 Где:
-- label ∈ ["info","n_prog","r_prog","math","conclusion"]
+- label ∈ ["info","n_code","r_code","math","conclusion"]
 - cell_indices — массив индексов ячеек (целые числа), образующих непрерывный диапазон.
+- need_conclusion — обязателен только для 'n_code'/'r_code'. Для остальных типов опусти или считаем false.
 
 Ниже идет содержимое файла (.py) с маркерами ячеек. Выполни разметку, учитывая границы ячеек и их содержание.
 
@@ -232,13 +235,14 @@ class NotebookTaskSplitter:
         1) Валидация и нормализация:
            - label должен быть допустимым
            - индексы — int, в границах [0..total_cells-1]
+           - need_conclusion — bool для n_code/r_code, иначе False
            - разбиваем на непрерывные диапазоны при необходимости
         2) Сортировка по стартовому индексу
         3) Проверка пересечений
         4) Покрытие пропущенных ячеек сегментами info
         """
         raw_segments = model_data["segments"]
-        normalized: List[Tuple[str, List[int]]] = []
+        normalized: List[Tuple[str, List[int], bool]] = []
 
         # 1) нормализация и дробление разрывов
         for i, seg in enumerate(raw_segments, start=1):
@@ -260,24 +264,43 @@ class NotebookTaskSplitter:
                     raise ValueError(f"Индекс {x} вне диапазона [0..{total_cells-1}] в segments[{i}].")
                 cleaned.append(x)
 
+            # need_conclusion: только для n_code/r_code, иначе False
+            need_conclusion = False
+            if label in ("n_code", "r_code"):
+                nc = seg.get("need_conclusion", False)
+                if isinstance(nc, bool):
+                    need_conclusion = nc
+                else:
+                    # если прилетела строка/число — мягко приведём и предупредим
+                    if nc in (0, 1):
+                        need_conclusion = bool(nc)
+                        self.logger.warning(f"⚠ need_conclusion в segments[{i}] приведён к bool из {nc}.")
+                    elif isinstance(nc, str) and nc.lower() in ("true", "false"):
+                        need_conclusion = (nc.lower() == "true")
+                        self.logger.warning(f"⚠ need_conclusion в segments[{i}] приведён к bool из строки '{nc}'.")
+                    elif nc is None:
+                        need_conclusion = False
+                    else:
+                        raise ValueError(f"need_conclusion должен быть bool для n_code/r_code (segments[{i}]).")
+
             cleaned = sorted(set(cleaned))
             # дробим на непрерывные подпоследовательности
             for rng in self._split_into_contiguous_runs(cleaned):
-                normalized.append((label, rng))
+                normalized.append((label, rng, need_conclusion))
 
         # 2) сортируем по старту
         normalized.sort(key=lambda x: x[1][0])
 
-        # 3) проверяем пересечения
+        # 3) проверяем перекрытия
         occupied = set()
-        final_segments: List[Tuple[str, List[int]]] = []
-        for label, idxs in normalized:
+        final_segments: List[Tuple[str, List[int], bool]] = []
+        for label, idxs, need_conclusion in normalized:
             if any(i in occupied for i in idxs):
                 overlap = [i for i in idxs if i in occupied]
                 raise ValueError(f"Перекрывающиеся сегменты на индексах: {overlap}")
             for i in idxs:
                 occupied.add(i)
-            final_segments.append((label, idxs))
+            final_segments.append((label, idxs, need_conclusion))
 
         # 4) покрываем пропуски info-сегментами
         missing = [i for i in range(total_cells) if i not in occupied]
@@ -286,12 +309,15 @@ class NotebookTaskSplitter:
                                 f"Будут добавлены сегменты 'info'.")
             info_runs = self._split_into_contiguous_runs(missing)
             for rng in info_runs:
-                final_segments.append(("info", rng))
+                final_segments.append(("info", rng, False))
             # Пересобираем в правильном порядке
             final_segments.sort(key=lambda x: x[1][0])
 
         # Превращаем в словари
-        return [{"label": label, "cell_indices": idxs} for label, idxs in final_segments]
+        return [
+            {"label": label, "cell_indices": idxs, "need_conclusion": (need_conclusion if label in ("n_code", "r_code") else False)}
+            for label, idxs, need_conclusion in final_segments
+        ]
 
     def _split_into_contiguous_runs(self, sorted_unique: List[int]) -> List[List[int]]:
         if not sorted_unique:
@@ -323,6 +349,7 @@ class NotebookTaskSplitter:
             result.append({
                 "label": seg["label"],
                 "text": text,
-                "cells": seg_cells
+                "cells": seg_cells,
+                "need_conclusion": bool(seg.get("need_conclusion", False)) if seg["label"] in ("n_code", "r_code") else False
             })
         return result
