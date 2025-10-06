@@ -1,5 +1,6 @@
 import logging
 import uuid
+import base64
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -9,16 +10,17 @@ from runner import ExecutionResult  # опционально: для add_executi
 @dataclass
 class _Msg:
     role: str  # "user" | "model"
-    parts: List[str]
+    # В parts теперь можно класть не только строки, но и dict-части вроде:
+    # {"inline_data": {"mime_type": "image/png", "data": "<base64>"}}
+    parts: List[Any]
     meta: Dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass
 class _Branch:
-    anchor_idx: (
-        int  # индекс сообщения-«якоря» в committed (обычно последний user перед кодом)
-    )
+    # индекс сообщения-«якоря» в committed (обычно последний user перед кодом)
+    anchor_idx: int
     messages: List[_Msg] = field(default_factory=list)
 
 
@@ -34,7 +36,10 @@ class ConversationHistory:
         как будто он сразу ответил правильно.
       - Пока ветка открыта, модель получает ПОЛНЫЙ контекст: committed + branch (ветка не урезается).
 
-    Формат для Gemini: [{"role":"user"|"model", "parts":[text]}]
+    Формат для Gemini:
+      [{"role": "user"|"model", "parts": [ <строки и/или dict-части> ]}, ...]
+    Пример части с картинкой:
+      {"inline_data": {"mime_type": "image/png", "data": "<base64>"}}
     """
 
     ALLOWED_ROLES = ("user", "model")
@@ -53,7 +58,7 @@ class ConversationHistory:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
-    # ------------- Базовые операции -------------
+    # ------------- Базовые операции (строковые) -------------
 
     def add_user(self, text: str, meta: Optional[Dict[str, Any]] = None) -> str:
         return self._add("user", text, meta)
@@ -61,10 +66,32 @@ class ConversationHistory:
     def add_model(self, text: str, meta: Optional[Dict[str, Any]] = None) -> str:
         return self._add("model", text, meta)
 
+    # ------------- Операции с parts (строки + inline-данные) -------------
+
+    def add_user_parts(self, parts: List[Any], meta: Optional[Dict[str, Any]] = None) -> str:
+        return self._add_parts("user", parts, meta)
+
+    def add_model_parts(self, parts: List[Any], meta: Optional[Dict[str, Any]] = None) -> str:
+        return self._add_parts("model", parts, meta)
+
+    # ------------- Низкоуровневые добавления -------------
+
     def _add(self, role: str, text: str, meta: Optional[Dict[str, Any]]) -> str:
         if role not in self.ALLOWED_ROLES:
             raise ValueError("role должен быть 'user' или 'model'.")
         msg = _Msg(role=role, parts=[text], meta=(meta or {}))
+        if self._branch:
+            self._branch.messages.append(msg)
+        else:
+            self._committed.append(msg)
+        return msg.id
+
+    def _add_parts(self, role: str, parts: List[Any], meta: Optional[Dict[str, Any]]) -> str:
+        if role not in self.ALLOWED_ROLES:
+            raise ValueError("role должен быть 'user' или 'model'.")
+        if not isinstance(parts, list) or not parts:
+            raise ValueError("parts должен быть непустым списком.")
+        msg = _Msg(role=role, parts=list(parts), meta=(meta or {}))
         if self._branch:
             self._branch.messages.append(msg)
         else:
@@ -165,7 +192,10 @@ class ConversationHistory:
     def get_history(self, include_branch: bool = True) -> List[Dict[str, Any]]:
         """
         Возвращает историю в формате Gemini:
-          [{"role":"user"|"model","parts":[text]}, ...]
+          [
+            {"role": "user"|"model", "parts": [<str | dict-часть>, ...]},
+            ...
+          ]
         Если include_branch=True и ветка открыта — добавляет её сообщения в конец.
         """
         msgs: List[_Msg] = list(self._committed)
@@ -184,15 +214,26 @@ class ConversationHistory:
         tmp.append({"role": "user", "parts": [text]})
         return tmp
 
+    def with_next_user_parts(
+        self, parts: List[Any], meta: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Вариант с произвольными parts (строки + inline_data).
+        Полезно, когда нужно сразу приложить, например, картинки.
+        """
+        if not isinstance(parts, list) or not parts:
+            raise ValueError("parts должен быть непустым списком.")
+        tmp = self.get_history(include_branch=True)
+        tmp.append({"role": "user", "parts": list(parts)})
+        return tmp
+
     def clear(self) -> None:
         """Полная очистка истории и ветки."""
         self._committed.clear()
         self._branch = None
 
     def __len__(self) -> int:
-        return len(self._committed) + (
-            len(self._branch.messages) if self._branch else 0
-        )
+        return len(self._committed) + (len(self._branch.messages) if self._branch else 0)
 
     # ------------- Удобства: фиксация выполнения -------------
 
@@ -202,14 +243,19 @@ class ConversationHistory:
         cell_index: Optional[int] = None,
         meta: Optional[Dict[str, Any]] = None,
         max_field_len: int = 1200,
+        attach_images: bool = False,
+        max_images: int = 3,
+        allowed_mimes: Optional[List[str]] = None,
     ) -> str:
         """
-        Добавляет в историю короткую сводку выполнения ячейки как user-сообщение.
-        Это помогает «дать модели весь контекст выполнения».
+        Добавляет в историю сводку выполнения ячейки.
+        По умолчанию добавляет только текстовую сводку. Если attach_images=True —
+        прикладывает до max_images картинок в виде inline_data (image/png, image/jpeg).
 
-        По умолчанию строковые поля усекутся до max_field_len символов,
-        чтобы не раздуть контекст слишком сильно.
+        Возвращает id добавленного сообщения.
         """
+        allowed_mimes = allowed_mimes or ["image/png", "image/jpeg"]
+
         t_lines = []
         header = "[Выполнение ячейки"
         if cell_index is not None:
@@ -242,7 +288,35 @@ class ConversationHistory:
         m.setdefault("kind", "exec-result")
         if cell_index is not None:
             m["cell_index"] = cell_index
-        return self.add_user(text, meta=m)
+
+        if not attach_images:
+            return self.add_user(text, meta=m)
+
+        # Сборка parts с картинками
+        parts: List[Any] = [text]
+        attached = 0
+        for img in (exec_res.images or []):
+            if attached >= max_images:
+                break
+            if img.mime_type not in allowed_mimes:
+                continue
+            try:
+                b64 = base64.b64encode(img.data).decode("ascii")
+                parts.append(
+                    {
+                        "inline_data": {
+                            "mime_type": img.mime_type,
+                            "data": b64,
+                        }
+                    }
+                )
+                attached += 1
+            except Exception as e:
+                self.logger.debug(f"Не удалось прикрепить изображение ({img.mime_type}): {e}")
+
+        m["images_total"] = len(exec_res.images or [])
+        m["images_attached"] = attached
+        return self.add_user_parts(parts, meta=m)
 
     # ------------- Вспомогательное -------------
 

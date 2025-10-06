@@ -547,43 +547,81 @@ class NotebookSolver:
 
     def _add_execution_to_history(self, exec_res: ExecutionResult):
         """
-        Добавляет сводку выполнения в историю как user-сообщение.
-        Это помогает модели «видеть весь контекст выполнения ноутбука».
+        Добавляет сводку выполнения в историю как user-сообщение и прикладывает изображения
+        (image/png, image/jpeg) в виде inline_data, чтобы модель реально их «видела».
         """
-        parts = []
+        # Локальный импорт, чтобы не трогать верхние импорты
+        import base64
 
-        parts.append("[Результат выполнения предыдущей ячейки]")
-        parts.append(f"Время: {exec_res.elapsed_sec:.2f} сек")
+        # 1) Текстовая сводка
+        parts_text = []
+
+        parts_text.append("[Результат выполнения предыдущей ячейки]")
+        parts_text.append(f"Время: {exec_res.elapsed_sec:.2f} сек")
 
         if exec_res.stdout:
-            parts.append("\nВывод (stdout):")
-            parts.append(self._truncate(exec_res.stdout, 2000))
+            parts_text.append("\nВывод (stdout):")
+            parts_text.append(self._truncate(exec_res.stdout, 2000))
 
         if exec_res.stderr:
-            parts.append("\nСтандартная ошибка (stderr):")
-            parts.append(self._truncate(exec_res.stderr, 1000))
+            parts_text.append("\nСтандартная ошибка (stderr):")
+            parts_text.append(self._truncate(exec_res.stderr, 1000))
 
         if exec_res.result_text:
-            parts.append("\nРезультат последнего выражения:")
-            parts.append(self._truncate(exec_res.result_text, 1000))
+            parts_text.append("\nРезультат последнего выражения:")
+            parts_text.append(self._truncate(exec_res.result_text, 1000))
 
-        if exec_res.images:
-            parts.append(f"\nСоздано изображений: {len(exec_res.images)}")
+        total_imgs = len(exec_res.images)
+        if total_imgs:
+            parts_text.append(f"\nСоздано изображений: {total_imgs}")
 
-        if exec_res.error:
-            parts.append(f"\n❌ ОШИБКА: {exec_res.error.get('ename')}: {exec_res.error.get('evalue')}")
+        text_blob = "\n".join(parts_text)
 
-        text = "\n".join(parts)
-        self.history.add_user(text, meta={"kind": "exec-result"})
-        self.logger.debug(f"Добавлен результат выполнения в историю ({len(text)} симв.)")
+        # 2) Собираем parts: сначала текст, далее картинки как inline_data
+        parts: List[Any] = [text_blob]
+
+        # Правила вложения картинок
+        allowed_mimes = {"image/png", "image/jpeg"}
+        max_images = 3  # можно настроить
+        attached = 0
+
+        for img in exec_res.images:
+            if attached >= max_images:
+                break
+            if img.mime_type not in allowed_mimes:
+                continue
+            try:
+                b64 = base64.b64encode(img.data).decode("ascii")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": img.mime_type,
+                        "data": b64
+                    }
+                })
+                attached += 1
+            except Exception as e:
+                self.logger.debug(f"Не удалось прикрепить изображение ({img.mime_type}): {e}")
+
+        meta = {"kind": "exec-result", "images_total": total_imgs, "images_attached": attached}
+        self.history.add_user_parts(parts, meta=meta)
+        self.logger.debug(f"Добавлен результат выполнения в историю: {len(text_blob)} симв., изображений приложено: {attached}")
 
     def _request_conclusion_for_code(self, exec_res: ExecutionResult) -> str:
-        """Запрашивает текстовые выводы на основе результатов выполнения кода."""
-        prompt = "На основе результатов выполнения кода выше сформулируй краткие выводы."
+        """
+        Запрашивает выводы только по фактическим результатам выполнения предыдущей ячейки.
+        Модель увидит сводку выполнения (stdout/stderr/result_text/счётчик изображений) из истории,
+        поэтому здесь просим краткие, приземлённые выводы без домыслов.
+        """
+        prompt = (
+            "Сформулируй краткие выводы по результатам выполнения предыдущей ячейки. "
+            "Опираться только на фактический вывод (stdout, stderr, результат последнего выражения) "
+            "и на явные подсказки/описания графиков, если они были. "
+            "Если данных недостаточно — скажи об этом."
+        )
 
         prompt_full, gen_kwargs = self.prompter.compose(
             base_user_text=prompt,
-            label='conclusion'
+            label='code_conclusion'
         )
 
         history = self.history.with_next_user(prompt_full)

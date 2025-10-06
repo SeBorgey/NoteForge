@@ -8,25 +8,16 @@ class TaskPrompter:
     Это НЕ системный промпт — просто добавка к концу prompt'а.
 
     Идея:
-      - Для code-задач (n_code/r_code) возвращаем жёсткие указания: «только код», без Markdown/объяснений,
-        стабильные импорты и т.п. Если нужно сделать выводы — в виде Python-комментариев ('# Вывод: ...').
-      - Для math — пошаговое решение + 'Итог:' в конце.
-      - Для conclusion — краткий финальный ответ, 1–3 предложения/пункта.
-      - Для info — коротко, без кода, по делу.
+      - Для code-задач (n_code/r_code) — только код, без Markdown/объяснений/«выводов».
+      - Для math — формульное решение.
+      - Для conclusion — краткий финальный ответ.
+      - Для info — коротко, по делу.
+      - Для code_conclusion — отдельные выводы ПОСЛЕ выполнения кода.
 
-    Также можно вернуть рекомендуемые generation_kwargs для Gemini (например, response_mime_type).
-
-    Пример использования:
-        prompter = TaskPrompter()
-        text, gen_kwargs = prompter.compose(
-            base_user_text="Напиши функцию, которая считает среднее по списку",
-            label="n_code",
-            need_conclusion=True
-        )
-        # далее вы отправляете text в модель, а gen_kwargs передаёте как **generation_kwargs
+    Также возвращает рекомендуемые generation_kwargs для Gemini (например, response_mime_type).
     """
 
-    ALLOWED_LABELS = ("info", "n_code", "r_code", "math", "conclusion")
+    ALLOWED_LABELS = ("info", "n_code", "r_code", "math", "conclusion", "code_conclusion")
 
     def __init__(
         self,
@@ -60,8 +51,8 @@ class TaskPrompter:
 
         Args:
             base_user_text: исходный текст задачи
-            label: тип сегмента ("info" | "n_code" | "r_code" | "math" | "conclusion")
-            need_conclusion: для code-задач — нужно ли добавить краткие выводы (как комментарии)
+            label: тип сегмента ("info" | "n_code" | "r_code" | "math" | "conclusion" | "code_conclusion")
+            need_conclusion: устаревший флаг; для code-задач выводы теперь формируются отдельным шагом
             extra_hints: дополнительные указания (опционально)
 
         Returns:
@@ -110,6 +101,8 @@ class TaskPrompter:
             return self._suffix_math(extra_hints)
         if label == "conclusion":
             return self._suffix_conclusion(extra_hints)
+        if label == "code_conclusion":
+            return self._suffix_code_conclusion(extra_hints)
         if label == "info":
             return self._suffix_info(extra_hints)
         return ""
@@ -127,11 +120,6 @@ class TaskPrompter:
         return base + (f"\nДополнительно: {extra}\n" if extra else "")
 
     def _suffix_n_code(self, need_conclusion: bool, extra: Optional[str]) -> str:
-        concl = (
-            "- В конце добавь краткие выводы в виде Python-комментариев под заголовком '# Вывод:', 1–3 строки.\n"
-            if need_conclusion else
-            "- Никаких текстовых выводов — только исполняемый код.\n"
-        )
         base = f"""
 Верни только исполняемый {self.code_language}-код одной ячейки.
 Требования к выводу:
@@ -139,15 +127,11 @@ class TaskPrompter:
 - Импорты указывай только те, которых ещё не было в контексте.
 - Не запрашивай ввод у пользователя; не обращайся к внешним ресурсам без явной инструкции.
 - Пиши простой код. Используй принципы YAGNI и KISS. Важно: Не пиши комментарии в коде.
-{concl}"""
+- Никаких текстовых выводов — только исполняемый код.
+"""
         return base + (f"\nДополнительно: {extra}\n" if extra else "")
 
     def _suffix_r_code(self, need_conclusion: bool, extra: Optional[str]) -> str:
-        concl = (
-            "- В конце добавь краткие выводы в виде Python-комментариев под заголовком '# Вывод:', 1–3 строки.\n"
-            if need_conclusion else
-            "- Никаких текстовых выводов — только код.\n"
-        )
         base = f"""
 Исправь/дополни существующий {self.code_language}-код.
 Требования к выводу:
@@ -157,11 +141,12 @@ class TaskPrompter:
 - Не добавляй пояснений о том, что было изменено.
 - Пиши простой код. Используй принципы YAGNI и KISS. Важно: Не пиши комментарии в коде.
 - Однако ты должен сохранить все комментарии и докстринги, которые уже есть в коде, важно не добавлять свои.
-{concl}"""
+- Никаких текстовых выводов — только код.
+"""
         return base + (f"\nДополнительно: {extra}\n" if extra else "")
 
     def _suffix_math(self, extra: Optional[str]) -> str:
-        base = """
+        base = r"""
 Дай математическое решение на русском.
 пиши в стиле katex(формулы выделяй в $) Это нужно чтобы они правильно отображались, а не как код.
 Пример: $\phi+\xi$ - не отделяй $ от формулы пробелами.
@@ -175,6 +160,15 @@ class TaskPrompter:
     def _suffix_conclusion(self, extra: Optional[str]) -> str:
         base = """
 Требуется ответить на вопрос или написать вывод.
+Пиши как человек. Избегай лишней структурированности. 
+Пиши простыми предложениями. Используй меньше речевых оборотов. 
+Словарный запас должен быть скудным. Меньше эмоций. Меньше воды.
+"""
+        return base + (f"\nДополнительно: {extra}\n" if extra else "")
+
+    def _suffix_code_conclusion(self, extra: Optional[str]) -> str:
+        base = """
+Сформулируй краткие выводы по результатам выполнения предыдущей ячейки.
 Пиши как человек. Избегай лишней структурированности. 
 Пиши простыми предложениями. Используй меньше речевых оборотов. 
 Словарный запас должен быть скудным. Меньше эмоций. Меньше воды.

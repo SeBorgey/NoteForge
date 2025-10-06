@@ -149,102 +149,82 @@ class GeminiClient:
     ) -> str:
         """
         Отправляет сообщение в Gemini и возвращает ответ.
-        
+
         Args:
-            message: Текст сообщения или список сообщений для диалога
-                    Для диалога передайте историю в формате:
-                    [
-                        {"role": "user", "parts": ["текст"]},
-                        {"role": "model", "parts": ["текст"]},
-                        ...
-                    ]
+            message: Текст сообщения или список сообщений для диалога.
+                    Поддерживаются parts с inline_data для изображений:
+                    [{"role":"user","parts":[ "текст", {"inline_data":{"mime_type":"image/png","data":"...base64..."}} ]}, ...]
             **generation_kwargs: Дополнительные параметры для генерации
-                (temperature, max_output_tokens, top_p, top_k и т.д.)
-            
+                (temperature, max_output_tokens, top_p, top_k, response_mime_type и т.д.)
+
         Returns:
             Текст ответа от модели
-            
+
         Raises:
             Exception: Если все попытки запроса завершились неудачей
         """
-        # Определяем тип сообщения для логов
-        msg_preview = (
-            f"{message[:50]}..." if isinstance(message, str) 
-            else f"История из {len(message)} сообщений"
-        )
+        # Превью для логов
+        if isinstance(message, str):
+            msg_preview = f"{message[:50]}..."
+        else:
+            msg_preview = f"История из {len(message)} сообщений"
         self.logger.info(f"➤ Новый запрос: {msg_preview}")
-        
+
         last_exception = None
-        
+
         for attempt in range(1, self.max_retries + 1):
             try:
                 # Соблюдаем квоту
                 self._wait_if_needed()
-                
-                # Регистрируем запрос (важно: делаем это ДО отправки,
-                # т.к. даже неудачная попытка считается за запрос к API)
+
+                # Регистрируем запрос до отправки (неудачная попытка тоже считается)
                 self._record_request()
-                
-                self.logger.info(
-                    f"🔄 Попытка {attempt}/{self.max_retries}: отправка запроса..."
-                )
-                
-                # Формируем конфигурацию генерации
+
+                self.logger.info(f"🔄 Попытка {attempt}/{self.max_retries}: отправка запроса...")
+
+                # Конфигурация генерации
                 generation_config = None
                 if generation_kwargs:
-                    generation_config = genai.types.GenerationConfig(
-                        **generation_kwargs
-                    )
-                
-                # Отправляем запрос
+                    generation_config = genai.types.GenerationConfig(**generation_kwargs)
+
+                # Отправляем запрос:
+                # - если строка — просто строка
+                # - если список словарей (history) — передаём как есть (parts поддерживаются SDK)
                 if isinstance(message, str):
-                    # Простое сообщение
                     response = self.model.generate_content(
                         message,
                         generation_config=generation_config
                     )
                 else:
-                    # Диалог с историей
-                    chat = self.model.start_chat(history=message[:-1])
-                    response = chat.send_message(
-                        message[-1]["parts"][0],
+                    # ВАЖНО: не используем start_chat + send_message, чтобы не терять parts.
+                    response = self.model.generate_content(
+                        message,
                         generation_config=generation_config
                     )
-                
+
                 # Получаем текст ответа
                 response_text = self._extract_response_text(response)
 
-                
-                self.logger.info(
-                    f"✓ Ответ получен (длина: {len(response_text)} символов)"
-                )
+                self.logger.info(f"✓ Ответ получен (длина: {len(response_text)} символов)")
                 self.logger.debug(f"Превью ответа: {response_text[:100]}...")
-                
+
                 return response_text
-            
+
             except Exception as e:
                 last_exception = e
                 error_type = type(e).__name__
                 error_msg = str(e)
-                
+
                 self.logger.error(
-                    f"✗ Ошибка при попытке {attempt}/{self.max_retries}: "
-                    f"{error_type}: {error_msg}"
+                    f"✗ Ошибка при попытке {attempt}/{self.max_retries}: {error_type}: {error_msg}"
                 )
-                
-                # Если это не последняя попытка - ждём перед повтором
+
                 if attempt < self.max_retries:
-                    self.logger.info(
-                        f"⏳ Ожидание {self.retry_delay} сек перед повторной попыткой..."
-                    )
+                    self.logger.info(f"⏳ Ожидание {self.retry_delay} сек перед повторной попыткой...")
                     time.sleep(self.retry_delay)
                 else:
-                    # Все попытки исчерпаны
-                    self.logger.error(
-                        f"✗ Все {self.max_retries} попытки исчерпаны. Запрос провалился."
-                    )
-        
-        # Если мы здесь, значит все попытки провалились
+                    self.logger.error(f"✗ Все {self.max_retries} попытки исчерпаны. Запрос провалился.")
+
         raise Exception(
             f"Не удалось выполнить запрос после {self.max_retries} попыток. "
             f"Последняя ошибка: {type(last_exception).__name__}: {str(last_exception)}"
