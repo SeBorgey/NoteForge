@@ -467,20 +467,9 @@ class NotebookSolver:
         """
         Выполняет код с автоисправлением ошибок через ветки истории.
 
-        Стратегия:
-        - Открываем ветку для исправлений (якорь = последнее сообщение модели с кодом)
-        - Пытаемся выполнить
-        - Если ошибка — запрашиваем исправление через фиксер (добавляется в ветку)
-        - Повторяем до успеха или исчерпания попыток
-        - При успехе — коммитим ветку со squash (модель «сразу ответила правильно»)
-
-        Returns:
-            {
-                "success": bool,
-                "final_code": str,
-                "execution": ExecutionResult,
-                "attempts": int
-            }
+        Теперь НЕ перезапускает ядро и НЕ переисполняет пролог: prepare_strategy='never'.
+        Исполняется только последняя ячейка в текущем состоянии ядра.
+        Таймаут исполнения (если сработает) пробрасывается как исключение и НЕ отправляется в LLM.
         """
         if not cells:
             raise ValueError("Нужна хотя бы одна ячейка для выполнения.")
@@ -499,21 +488,19 @@ class NotebookSolver:
                 attempt += 1
                 self.logger.info(f"⚙️ Попытка #{attempt}/{self.max_code_fix_attempts + 1}...")
 
-                # Собираем все ячейки
+                # Собираем список ячеек: пролог + последняя (пролог НЕ будет выполнен при prepare_strategy='never')
                 all_cells = cells[:-1] + [last_code]
 
-                # Выполняем БЕЗ встроенного автофикса
+                # Критично: НЕ перезапускаем ядро и НЕ исполняем пролог
                 result = self.executor.run(
                     cells=all_cells,
-                    prepare_strategy='auto',
+                    prepare_strategy='never',  # было 'auto'
                     max_fixes=0
                 )
 
                 if result.success:
                     self.logger.info(f"✅ Код выполнен успешно (попытка #{attempt})")
-                    # Коммитим ветку со squash
                     self.history.commit_branch(squash=True, keep_last_exec_summary=False)
-
                     return {
                         "success": True,
                         "final_code": result.final_code,
@@ -521,7 +508,7 @@ class NotebookSolver:
                         "attempts": attempt
                     }
 
-                # Ошибка — пытаемся исправить
+                # Ошибка — пытаемся исправить (кроме таймаута: он сюда не попадёт, т.к. пробрасывается исключением)
                 if attempt > self.max_code_fix_attempts:
                     self.logger.error(f"❌ Не удалось исправить код за {attempt} попыток")
                     break
@@ -529,7 +516,6 @@ class NotebookSolver:
                 self.logger.warning(f"⚠️ Ошибка выполнения: {result.execution.error.get('ename')}")
                 self.logger.info("🔧 Запрос исправления...")
 
-                # Запрашиваем исправление через фиксер (он сам добавит в ветку)
                 fixed_code = self.fixer.suggest_fix(
                     code=last_code,
                     error=result.execution.error,
@@ -545,9 +531,7 @@ class NotebookSolver:
 
             # Если сюда дошли — не удалось исправить
             self.logger.error("❌ Не удалось получить рабочий код")
-            # Коммитим ветку со squash (сохраняем хотя бы последний ответ)
             self.history.commit_branch(squash=True, keep_last_exec_summary=False)
-
             return {
                 "success": False,
                 "final_code": last_code,
@@ -556,6 +540,7 @@ class NotebookSolver:
             }
 
         except Exception as e:
+            # Включая TimeoutError — не отправляем это в LLM, просто останавливаемся
             self.logger.error(f"💥 Критическая ошибка при выполнении: {e}")
             self.history.discard_branch()
             raise

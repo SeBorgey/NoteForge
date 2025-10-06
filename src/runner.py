@@ -38,7 +38,7 @@ class CodeRunner:
         working_dir: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         startup_timeout: float = 30.0,
-        execution_timeout: float = 30.0,
+        execution_timeout: float = 1800.0,  # 30 минут по умолчанию
         preserve_state: bool = True,
         prelude_code: Optional[str] = "%matplotlib inline\n",
         log_level: int = logging.INFO,
@@ -147,22 +147,28 @@ class CodeRunner:
 
         self._drain_iopub()
 
-        timeout = timeout or self.execution_timeout
+        effective_timeout = self.execution_timeout if timeout is None else timeout
         self.logger.info("▶ Выполнение кода...")
         self.logger.debug("Код:\n" + code)
 
-        result = self._execute_internal(code, silent=False, timeout=timeout)
+        try:
+            result = self._execute_internal(code, silent=False, timeout=effective_timeout)
+        except TimeoutError as te:
+            self.logger.error(f"✗ Таймаут выполнения: {te}")
+            raise
 
         if result.error:
             self.logger.error(f"✗ Ошибка: {result.error.get('ename')}: {result.error.get('evalue')}")
         else:
-            self.logger.info(f"✓ Готово за {result.elapsed_sec:.2f} c, "
-                             f"stdout={len(result.stdout)} симв., stderr={len(result.stderr)} симв., "
-                             f"картинок={len(result.images)}")
+            self.logger.info(
+                f"✓ Готово за {result.elapsed_sec:.2f} c, "
+                f"stdout={len(result.stdout)} симв., stderr={len(result.stderr)} симв., "
+                f"картинок={len(result.images)}"
+            )
         return result
 
     # Внутреннее исполнение
-    def _execute_internal(self, code: str, silent: bool, timeout: float) -> ExecutionResult:
+    def _execute_internal(self, code: str, silent: bool, timeout: Optional[float]) -> ExecutionResult:
         t0 = time.perf_counter()
         msg_id = self.kc.execute(code, silent=silent, store_history=True, allow_stdin=False, stop_on_error=False)
 
@@ -177,12 +183,14 @@ class CodeRunner:
             try:
                 msg = self.kc.get_iopub_msg(timeout=0.2)
             except Empty:
-                if (time.perf_counter() - t0) > timeout:
+                if (timeout is not None) and ((time.perf_counter() - t0) > timeout):
                     self.logger.warning(f"⏳ Таймаут {timeout}s. Прерываем ядро...")
-                    try: self.km.interrupt_kernel()
-                    except Exception: pass
-                    error = {"ename": "TimeoutError", "evalue": f"Execution exceeded {timeout} seconds", "traceback": []}
-                    break
+                    try:
+                        self.km.interrupt_kernel()
+                    except Exception:
+                        pass
+                    # Пробрасываем исключение наверх — НЕ превращаем это в «ошибку кода» для LLM
+                    raise TimeoutError(f"Execution exceeded {timeout} seconds")
                 continue
 
             if msg["parent_header"].get("msg_id") != msg_id:

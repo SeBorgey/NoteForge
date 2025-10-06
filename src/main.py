@@ -28,7 +28,7 @@ def main():
     # 1. Создаём клиент Gemini
     gemini = GeminiClient(
         api_key=API_KEY,
-        model_name="gemini-2.5-flash",
+        model_name="gemini-2.5-pro",
         requests_per_minute=5,
         max_retries=3
     )
@@ -44,7 +44,7 @@ def main():
     runner = CodeRunner(
         kernel_name="python3",
         startup_timeout=120.0,   # было 30.0
-        execution_timeout=60.0,
+        execution_timeout=1800.0,
         preserve_state=True,
         prelude_code="%matplotlib inline\n"
     )
