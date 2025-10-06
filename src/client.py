@@ -53,7 +53,42 @@ class GeminiClient:
         # Очередь для отслеживания времени запросов
         # Хранит timestamp последних N запросов
         self.request_times = deque(maxlen=self.requests_per_minute)
-    
+
+    def _extract_response_text(self, response) -> str:
+        # 1) Самый простой путь
+        try:
+            t = response.text
+            if t and t.strip():
+                return t
+        except Exception:
+            pass
+
+        # 2) Собрать текст из candidates/parts
+        candidates = getattr(response, "candidates", None) or []
+        collected = []
+        finish_reasons = []
+        for c in candidates:
+            fr = getattr(c, "finish_reason", None)
+            finish_reasons.append(str(fr))
+            content = getattr(c, "content", None)
+            parts = getattr(content, "parts", None) or []
+            for p in parts:
+                txt = getattr(p, "text", None)
+                if txt:
+                    collected.append(txt)
+
+        if collected:
+            return "\n".join(collected).strip()
+
+        # 3) Диагностика (например, SAFETY/BLOCKLIST или пустой вывод)
+        pf = getattr(response, "prompt_feedback", None)
+        block_reason = getattr(pf, "block_reason", None) if pf else None
+        safety = getattr(pf, "safety_ratings", None) if pf else None
+        raise RuntimeError(
+            f"Пустой ответ модели. finish_reasons={finish_reasons}, "
+            f"block_reason={block_reason}, safety={safety}"
+        )
+
     def _setup_logger(self, log_level: int) -> logging.Logger:
         """Настраивает логгер для класса."""
         logger = logging.getLogger(f"{__name__}.GeminiClient")
@@ -177,7 +212,8 @@ class GeminiClient:
                     )
                 
                 # Получаем текст ответа
-                response_text = response.text
+                response_text = self._extract_response_text(response)
+
                 
                 self.logger.info(
                     f"✓ Ответ получен (длина: {len(response_text)} символов)"

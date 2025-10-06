@@ -34,7 +34,7 @@ class NotebookTaskSplitter:
         log_level: int = logging.INFO,
         temperature: float = 0.2,
         top_p: float = 0.1,
-        max_output_tokens: int = 4096
+        max_output_tokens: int = 8192
     ):
         self.gemini = gemini_client
         self.temperature = temperature
@@ -82,7 +82,6 @@ class NotebookTaskSplitter:
             prompt,
             temperature=self.temperature,
             top_p=self.top_p,
-            max_output_tokens=self.max_output_tokens,
             response_mime_type="application/json"
         )
 

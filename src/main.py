@@ -36,8 +36,8 @@ def main():
     # 2. Создаём разметчик задач
     splitter = NotebookTaskSplitter(
         gemini_client=gemini,
-        temperature=1,
-        top_p=0.95
+        temperature=0.2,
+        top_p=0.1,
     )
 
     # 3. Создаём исполнитель кода
