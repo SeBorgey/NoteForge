@@ -107,15 +107,36 @@ class CodeRunner:
         if self.km is None:
             self.start()
             return
+
         self.logger.info("🔁 Перезапуск ядра...")
-        self.km.restart_kernel(now=True)
-        self.kc = self.km.client()
-        self.kc.start_channels()
-        self.kc.wait_for_ready(timeout=self.startup_timeout)
-        self.logger.info("✓ Ядро перезапущено.")
+        try:
+            # 1) Обычный restart
+            self.km.restart_kernel(now=True)
+            self.kc = self.km.client()
+            self.kc.start_channels()
+            self.kc.wait_for_ready(timeout=self.startup_timeout)
+            self.logger.info("✓ Ядро перезапущено.")
+        except Exception as e:
+            self.logger.warning(f"Перезапуск ядра не удался: {e}. Пробуем полный рестарт...")
+
+            # 2) Полный рестарт (shutdown → start)
+            try:
+                self.shutdown(now=True)  # корректно гасим текущее ядро
+            except Exception as e2:
+                self.logger.warning(f"Проблема при остановке ядра: {e2}")
+
+            self.km = None
+            # Немного подождать, чтобы порт освободился (редко, но помогает)
+            time.sleep(1.0)
+
+            # 3) Старт с нуля
+            self.start()
+
+        # Prelude после успешного (любого) рестарта
         if self.prelude_code.strip():
             self.logger.debug("Выполняем prelude_code после перезапуска (silent)...")
             self._execute_internal(self.prelude_code, silent=True, timeout=self.execution_timeout)
+
 
     # Публичный API
     def execute(self, code: str, timeout: Optional[float] = None) -> ExecutionResult:

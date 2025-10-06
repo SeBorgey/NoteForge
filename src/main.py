@@ -6,7 +6,7 @@ from parser import NotebookTaskSplitter
 from runner import CodeRunner
 from prompter import TaskPrompter
 from solver import NotebookSolver
-
+import config
 
 def main():
     # Настройка базового логирования
@@ -16,8 +16,8 @@ def main():
     )
 
     # Параметры
-    API_KEY = "your-api-key-here"  # ЗАМЕНИТЕ НА СВОЙ КЛЮЧ!
-    INPUT_NOTEBOOK = "homework.ipynb"
+    API_KEY = config.API  # ЗАМЕНИТЕ НА СВОЙ КЛЮЧ!
+    INPUT_NOTEBOOK = "test.ipynb"
     OUTPUT_NOTEBOOK = "homework_solved.ipynb"
     LOG_FILE = "solver.log"
 
@@ -28,22 +28,22 @@ def main():
     # 1. Создаём клиент Gemini
     gemini = GeminiClient(
         api_key=API_KEY,
-        model_name="gemini-2.0-flash-exp",
-        requests_per_minute=10,
+        model_name="gemini-2.5-flash",
+        requests_per_minute=5,
         max_retries=3
     )
 
     # 2. Создаём разметчик задач
     splitter = NotebookTaskSplitter(
         gemini_client=gemini,
-        temperature=0.2,
-        top_p=0.1
+        temperature=1,
+        top_p=0.95
     )
 
     # 3. Создаём исполнитель кода
     runner = CodeRunner(
         kernel_name="python3",
-        startup_timeout=30.0,
+        startup_timeout=120.0,   # было 30.0
         execution_timeout=60.0,
         preserve_state=True,
         prelude_code="%matplotlib inline\n"
