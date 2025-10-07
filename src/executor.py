@@ -1,5 +1,4 @@
 import logging
-import hashlib
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
@@ -15,7 +14,6 @@ class ICodeFixer(Protocol):
     """
     Абстракция исправителя кода.
     Возвращает новый код (str), если предлагает исправление; иначе None.
-    Никаких внешних вызовов здесь нет — вы можете реализовать хоть ручной фиксер, хоть эвристический.
     """
     def suggest_fix(self, code: str, error: Optional[Dict[str, Any]], stdout: str, stderr: str) -> Optional[str]:
         ...
@@ -46,10 +44,13 @@ class LastCellRunResult:
 
 class LastCellExecutor:
     """
-    Стратегии подготовки:
-      - 'auto': исполняем пролог только если он изменился с прошлого раза
-      - 'always': всегда перезапуск ядра и исполнение пролога
-      - 'never': считаем, что состояние уже подготовлено
+    Исполнение «как в Jupyter»:
+      - ядро живое, ничего не перезапускаем;
+      - пролог (все предыдущие ячейки) исполняем инкрементально — только те, что ещё ни разу не запускались;
+      - последнюю ячейку можно пытаться исправлять и запускать повторно.
+    prepare_strategy:
+      - 'auto' | 'always' — готовим только хвост пролога, которого ещё не было;
+      - 'never' — ничего не готовим.
     """
     def __init__(
         self,
@@ -68,8 +69,8 @@ class LastCellExecutor:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
-        self._prepared_once = False
-        self._preamble_fp: Optional[str] = None
+        # Сколько прологовых ячеек уже реально исполнили в текущем живом ядре
+        self._prepared_until: int = 0
 
     def run(
         self,
@@ -81,7 +82,7 @@ class LastCellExecutor:
         pre_cells = cells[:-1]
         last_code = cells[-1]
 
-        # Подготовка состояния
+        # Подготовка состояния (инкрементально; без рестартов)
         ok = self._prepare_state_if_needed(pre_cells, prepare_strategy)
         if not ok:
             raise RuntimeError("Ошибка в подготовительных ячейках.")
@@ -90,9 +91,11 @@ class LastCellExecutor:
         res = self.runner.execute(last_code)
         attempts: List[FixAttempt] = []
         if not res.error:
+            # Эта последняя ячейка теперь считается «выполненной» и в следующий раз станет частью пролога
+            self._prepared_until = max(self._prepared_until, len(pre_cells) + 1)
             return LastCellRunResult(True, last_code, res, attempts)
 
-        # Попытки фикса (если включено)
+        # Попытки фикса (если включено): переисполняем ТОЛЬКО последнюю ячейку
         for attempt in range(1, max_fixes + 1):
             self.logger.warning(f"⚠ Ошибка в последней ячейке. Попытка исправления {attempt}/{max_fixes}...")
             proposal = self.fixer.suggest_fix(last_code, res.error, res.stdout, res.stderr)
@@ -114,6 +117,8 @@ class LastCellExecutor:
             last_code = proposal
             if not res.error:
                 self.logger.info("✓ Исправление сработало.")
+                # Обновляем отметку «сколько пролога выполнено»: добавилась ещё одна готовая ячейка
+                self._prepared_until = max(self._prepared_until, len(pre_cells) + 1)
                 return LastCellRunResult(True, last_code, res, attempts)
 
         # Не удалось исправить
@@ -121,46 +126,30 @@ class LastCellExecutor:
 
     # Внутренняя кухня
     def _prepare_state_if_needed(self, pre_cells: List[str], strategy: str) -> bool:
-        if not pre_cells:
+        if not pre_cells or strategy == "never":
             return True
 
-        need_prepare = False
-        if strategy == "always":
-            need_prepare = True
-        elif strategy == "never":
-            need_prepare = False
-        elif strategy == "auto":
-            fp = self._fingerprint(pre_cells)
-            need_prepare = (not self._prepared_once) or (self._preamble_fp != fp)
-            self._preamble_fp = fp
-        else:
-            raise ValueError("prepare_strategy должен быть 'auto'|'always'|'never'.")
+        # auto/always: исполняем ТОЛЬКО новые прологовые ячейки (хвост), никаких повторов
+        start = self._prepared_until
+        end = len(pre_cells)
 
-        if not need_prepare:
-            self.logger.info("⏭ Пролог не изменился (‘auto’/’never’) — не переисполняем.")
+        if start >= end:
+            self.logger.info("⏭ Новых прологовых ячеек нет — пропускаем подготовку.")
             return True
 
-        self.logger.info("🔁 Перезапуск ядра и исполнение пролога...")
-        self.runner.restart()
-        for idx, code in enumerate(pre_cells):
+        self.logger.info(f"▶ Исполнение пролога (без перезапуска ядра): {start}..{end-1}")
+        for idx in range(start, end):
             self.logger.info(f"▶ Ячейка пролога #{idx}...")
-            r = self.runner.execute(code)
+            r = self.runner.execute(pre_cells[idx])
             if r.error:
                 self.logger.error(f"✗ Ошибка в прологе #{idx}: {r.error.get('ename')}: {r.error.get('evalue')}")
                 return False
 
-        self._prepared_once = True
-        self.logger.info("✓ Состояние подготовлено.")
+        self._prepared_until = end
+        self.logger.info("✓ Состояние подготовлено (инкрементально).")
         return True
-
-    @staticmethod
-    def _fingerprint(codes: List[str]) -> str:
-        joined = "\n# ----- CELL SPLIT -----\n".join(codes)
-        return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _short(s: str, limit: int = 240) -> str:
         s = (s or "").replace("\n", "\\n")
-        return s if len(s) <= limit else s[: limit - 3] + "..."
-
-
+        return s if 

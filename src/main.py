@@ -29,7 +29,7 @@ def main():
     gemini = GeminiClient(
         api_key=API_KEY,
         model_name="gemini-2.5-pro",
-        requests_per_minute=5,
+        requests_per_minute=2,
         max_retries=3
     )
 

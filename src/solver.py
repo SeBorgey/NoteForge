@@ -297,8 +297,9 @@ class NotebookSolver:
         # Запрашиваем код у модели
         code = self._request_code(segment, is_new=True)
 
-        # Выполняем с автоисправлением
-        exec_result = self._execute_code_with_fixes([code])
+        # ВАЖНО: для нового кода тоже запускаем пролог (весь накопленный код до этого)
+        preamble = self._collect_preamble_code()
+        exec_result = self._execute_code_with_fixes(preamble + [code])
 
         # Добавляем ячейку с кодом в результат
         self.result_cells.append({
@@ -309,7 +310,7 @@ class NotebookSolver:
             'outputs': []
         })
 
-        # Добавляем результат выполнения в историю (для контекста следующих сегментов)
+        # Добавляем результат выполнения в историю
         self._add_execution_to_history(exec_result['execution'])
 
         # Если требуются выводы — запрашиваем их отдельно
@@ -465,11 +466,9 @@ class NotebookSolver:
 
     def _execute_code_with_fixes(self, cells: List[str]) -> Dict[str, Any]:
         """
-        Выполняет код с автоисправлением ошибок через ветки истории.
-
-        Теперь НЕ перезапускает ядро и НЕ переисполняет пролог: prepare_strategy='never'.
-        Исполняется только последняя ячейка в текущем состоянии ядра.
-        Таймаут исполнения (если сработает) пробрасывается как исключение и НЕ отправляется в LLM.
+        Выполняет код с автоисправлением ошибок.
+        ВАЖНО: пролог (все предыдущие code-ячейки) исполняется ИНКРЕМЕНТАЛЬНО и ровно один раз за сессию ядра.
+            При попытках фикса переисполняется только последняя ячейка.
         """
         if not cells:
             raise ValueError("Нужна хотя бы одна ячейка для выполнения.")
@@ -488,14 +487,13 @@ class NotebookSolver:
                 attempt += 1
                 self.logger.info(f"⚙️ Попытка #{attempt}/{self.max_code_fix_attempts + 1}...")
 
-                # Собираем список ячеек: пролог + последняя (пролог НЕ будет выполнен при prepare_strategy='never')
+                # Пролог + текущая последняя. Executor сам решает, что из пролога ещё не исполнялось.
                 all_cells = cells[:-1] + [last_code]
 
-                # Критично: НЕ перезапускаем ядро и НЕ исполняем пролог
                 result = self.executor.run(
                     cells=all_cells,
-                    prepare_strategy='never',  # было 'auto'
-                    max_fixes=0
+                    prepare_strategy='auto',  # инкрементально, без рестартов и без повторов
+                    max_fixes=0               # автопочинка делаем сами только для последней ячейки
                 )
 
                 if result.success:
@@ -508,7 +506,6 @@ class NotebookSolver:
                         "attempts": attempt
                     }
 
-                # Ошибка — пытаемся исправить (кроме таймаута: он сюда не попадёт, т.к. пробрасывается исключением)
                 if attempt > self.max_code_fix_attempts:
                     self.logger.error(f"❌ Не удалось исправить код за {attempt} попыток")
                     break
@@ -527,9 +524,9 @@ class NotebookSolver:
                     self.logger.warning("⚠️ Фиксер не предложил изменений. Останавливаемся.")
                     break
 
+                # Повторно пробуем ТОЛЬКО последнюю ячейку (пролог не трогаем)
                 last_code = fixed_code
 
-            # Если сюда дошли — не удалось исправить
             self.logger.error("❌ Не удалось получить рабочий код")
             self.history.commit_branch(squash=True, keep_last_exec_summary=False)
             return {
@@ -540,7 +537,6 @@ class NotebookSolver:
             }
 
         except Exception as e:
-            # Включая TimeoutError — не отправляем это в LLM, просто останавливаемся
             self.logger.error(f"💥 Критическая ошибка при выполнении: {e}")
             self.history.discard_branch()
             raise
