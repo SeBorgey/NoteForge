@@ -49,15 +49,6 @@ class ConversationHistory:
         self._branch: Optional[_Branch] = None
 
         self.logger = logging.getLogger(f"{__name__}.ConversationHistory")
-        self.logger.setLevel(log_level)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-
     # ------------- Базовые операции (строковые) -------------
 
     def add_user(self, text: str, meta: Optional[Dict[str, Any]] = None) -> str:

@@ -94,17 +94,6 @@ class GeminiClient:
     def _setup_logger(self, log_level: int) -> logging.Logger:
         """Настраивает логгер для класса."""
         logger = logging.getLogger(f"{__name__}.GeminiClient")
-        logger.setLevel(log_level)
-        
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s | %(levelname)-8s | %(message)s',
-                datefmt='%H:%M:%S'
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        
         return logger
     
     def _wait_if_needed(self):

@@ -62,13 +62,6 @@ class LastCellExecutor:
         self.fixer = fixer or NoOpFixer()
 
         self.logger = logging.getLogger(f"{__name__}.LastCellExecutor")
-        self.logger.setLevel(log_level)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S")
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-
         # Сколько прологовых ячеек уже реально исполнили в текущем живом ядре
         self._prepared_until: int = 0
 

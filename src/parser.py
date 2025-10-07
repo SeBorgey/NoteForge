@@ -43,14 +43,6 @@ class NotebookTaskSplitter:
         self.max_output_tokens = max_output_tokens
 
         self.logger = logging.getLogger(f"{__name__}.NotebookTaskSplitter")
-        self.logger.setLevel(log_level)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
 
     def segment_notebook(self, ipynb_path: str) -> List[Dict[str, Any]]:
         """

@@ -54,13 +54,6 @@ class CodeRunner:
         self.preserve_state = preserve_state
         self.prelude_code = prelude_code or ""
         self.logger = logging.getLogger(f"{__name__}.CodeRunner")
-        self.logger.setLevel(log_level)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S")
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-
         self.km: Optional[KernelManager] = None
         self.kc = None
 

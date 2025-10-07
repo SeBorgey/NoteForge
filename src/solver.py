@@ -29,12 +29,6 @@ class GeminiFixer:
         self.history = history
         self.prompter = prompter
         self.logger = logging.getLogger(f"{__name__}.GeminiFixer")
-        self.logger.setLevel(logging.INFO)
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S")
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
 
     def suggest_fix(
         self,
@@ -170,35 +164,42 @@ class NotebookSolver:
     def _setup_logger(self, log_level: int, log_file: Optional[str]) -> logging.Logger:
         """Настраивает логгер: только консоль, без записи в файл."""
         logger = logging.getLogger(f"{__name__}.NotebookSolver")
-        logger.setLevel(logging.DEBUG)  # уровень логгера высокий, фильтруем хендлером
-        logger.handlers.clear()
-
-        formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)-8s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-
-        console = logging.StreamHandler()
-        console.setLevel(log_level)
-        console.setFormatter(formatter)
-        logger.addHandler(console)
-
         return logger
 
     # =========================================================================
     # ПУБЛИЧНЫЙ API
     # =========================================================================
 
+    def _save_notebook_py(self, output_py_path: str):
+        """
+        Сохраняет текущее состояние result_cells в .py формате с маркерами ячеек.
+        Markdown/raw превращаются в комментарии.
+        """
+        lines = [
+            "# -*- coding: utf-8 -*-",
+            "# Auto-exported from NotebookSolver during run. Do not edit.",
+            "",
+        ]
+        for idx, cell in enumerate(self.result_cells):
+            ctype = cell.get('cell_type', 'raw')
+            lines.append(f"# ===== CELL {idx} | {ctype} =====")
+            src = cell.get('source') or ""
+            if ctype in ('markdown', 'raw'):
+                for line in src.splitlines():
+                    lines.append("# " + line)
+            else:  # code
+                lines.append(src)
+            lines.append("")
+
+        text = "\n".join(lines)
+        with open(output_py_path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        self.logger.info(f"📝 Снимок .py сохранён: {output_py_path}")
+
     def solve(self, ipynb_path: str, output_path: Optional[str] = None) -> str:
         """
         Решает ноутбук и сохраняет результат.
-
-        Args:
-            ipynb_path: путь к входному .ipynb
-            output_path: путь к выходному .ipynb (если None — добавляется суффикс _solved)
-
-        Returns:
-            путь к созданному файлу
+        По ходу выполнения сохраняет .py-снимок текущего состояния (для отладки).
         """
         self.logger.info("=" * 80)
         self.logger.info(f"🚀 СТАРТ РЕШЕНИЯ НОУТБУКА: {ipynb_path}")
@@ -206,39 +207,60 @@ class NotebookSolver:
 
         start_time = time.time()
 
-        # 1. Разбиваем ноутбук на сегменты
-        self.logger.info("🔍 Разбиение ноутбука на сегменты задач...")
-        segments = self.splitter.segment_notebook(ipynb_path)
-        self.logger.info(f"✓ Получено сегментов: {len(segments)}")
-        for i, seg in enumerate(segments, 1):
-            self.logger.info(f"  [{i}] {seg['label']} ({len(seg['cells'])} ячеек)")
-
-        # 2. Обрабатываем каждый сегмент
-        self.result_cells.clear()
-
-        for idx, segment in enumerate(segments, start=1):
-            self.logger.info("")
-            self.logger.info("=" * 80)
-            self.logger.info(f"📌 СЕГМЕНТ {idx}/{len(segments)}: {segment['label']}")
-            self.logger.info("=" * 80)
-
-            self._process_segment(segment)
-
-        # 3. Сохраняем итоговый ноутбук
+        # Определяем будущие пути для ipynb и py (py нужен уже сейчас для снапшотов)
         if output_path is None:
             p = Path(ipynb_path)
-            output_path = str(p.parent / f"{p.stem}_solved{p.suffix}")
+            planned_ipynb = p.parent / f"{p.stem}_solved{p.suffix}"
+        else:
+            planned_ipynb = Path(output_path)
+        planned_py = planned_ipynb.with_suffix(".py")
 
-        self._save_notebook(output_path)
+        try:
+            # 1. Разбиваем ноутбук на сегменты
+            self.logger.info("🔍 Разбиение ноутбука на сегменты задач...")
+            segments = self.splitter.segment_notebook(ipynb_path)
+            self.logger.info(f"✓ Получено сегментов: {len(segments)}")
+            for i, seg in enumerate(segments, 1):
+                self.logger.info(f"  [{i}] {seg['label']} ({len(seg['cells'])} ячеек)")
 
-        elapsed = time.time() - start_time
-        self.logger.info("")
-        self.logger.info("=" * 80)
-        self.logger.info(f"✅ РЕШЕНИЕ ЗАВЕРШЕНО за {elapsed:.1f} сек")
-        self.logger.info(f"💾 Результат: {output_path}")
-        self.logger.info("=" * 80)
+            # 2. Обрабатываем каждый сегмент
+            self.result_cells.clear()
 
-        return output_path
+            for idx, segment in enumerate(segments, start=1):
+                self.logger.info("")
+                self.logger.info("=" * 80)
+                self.logger.info(f"📌 СЕГМЕНТ {idx}/{len(segments)}: {segment['label']}")
+                self.logger.info("=" * 80)
+
+                self._process_segment(segment)
+
+                # Сохраняем промежуточный .py снимок после каждого сегмента
+                self._save_notebook_py(str(planned_py))
+
+            # 3. Сохраняем итоговый ноутбук
+            final_ipynb_path = str(planned_ipynb) if output_path is None else str(planned_ipynb)
+            self._save_notebook(final_ipynb_path)
+
+            # И финальный .py снимок
+            self._save_notebook_py(str(planned_py))
+
+            elapsed = time.time() - start_time
+            self.logger.info("")
+            self.logger.info("=" * 80)
+            self.logger.info(f"✅ РЕШЕНИЕ ЗАВЕРШЕНО за {elapsed:.1f} сек")
+            self.logger.info(f"💾 Результат: {final_ipynb_path}")
+            self.logger.info("=" * 80)
+
+            return final_ipynb_path
+
+        except Exception:
+            # На любой ошибке — сохраняем текущий .py снимок и пробрасываем исключение
+            try:
+                self._save_notebook_py(str(planned_py))
+                self.logger.info(f"📝 Снимок .py сохранён перед остановкой: {planned_py}")
+            except Exception as _:
+                pass
+            raise
 
     # =========================================================================
     # ОБРАБОТКА СЕГМЕНТОВ

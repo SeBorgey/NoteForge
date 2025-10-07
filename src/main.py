@@ -8,6 +8,12 @@ from prompter import TaskPrompter
 from solver import NotebookSolver
 import config
 
+logging.basicConfig(
+level=logging.INFO,
+format="%(asctime)s | %(levelname)-8s | %(message)s",
+datefmt="%H:%M:%S",
+)
+
 def main():
     # Настройка базового логирования
     logging.basicConfig(
