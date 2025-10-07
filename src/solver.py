@@ -300,21 +300,34 @@ class NotebookSolver:
         self.logger.info(f"✓ Скопировано ячеек: {len(segment['cells'])}")
 
     def _process_n_code(self, segment: Dict[str, Any]):
-        """Написание нового кода: запрашиваем, выполняем, добавляем ячейку."""
+        """Новый код: исполняем все код-ячейки сегмента по порядку,
+        затем добавляем и исполняем новую ячейку с кодом от модели как последнюю.
+        """
         self.logger.info("💻 Обработка n_code-сегмента (новый код)...")
 
-        # Копируем исходные ячейки
-        for cell in segment['cells']:
+        seg_cells = segment['cells']
+
+        # Код-ячейки сегмента, которые должны быть выполнены до новой ячейки
+        support_code_sources = [c['source'] for c in seg_cells if c['type'] == 'code']
+
+        # Запрашиваем новый код у модели
+        code_from_model = self._request_code(segment, is_new=True)
+
+        # План выполнения:
+        # - глобальный пролог (все ранее подтверждённые code-ячейки)
+        # - код-ячейки текущего сегмента (как поддерживающие)
+        # - новая ячейка с кодом модели
+        global_preamble = self._collect_preamble_code()
+        exec_cells = global_preamble + support_code_sources + [code_from_model]
+
+        # Запуск с автоисправлением ТОЛЬКО последней ячейки
+        exec_result = self._execute_code_with_fixes(exec_cells)
+
+        # После выполнения — добавляем в результат все ячейки сегмента как есть
+        for cell in seg_cells:
             self.result_cells.append(self._copy_cell(cell))
 
-        # Запрашиваем код у модели
-        code = self._request_code(segment, is_new=True)
-
-        # ВАЖНО: для нового кода тоже запускаем пролог (весь накопленный код до этого)
-        preamble = self._collect_preamble_code()
-        exec_result = self._execute_code_with_fixes(preamble + [code])
-
-        # Добавляем ячейку с кодом в результат
+        # И ДОБАВЛЯЕМ новую ячейку с финальным кодом
         self.result_cells.append({
             'cell_type': 'code',
             'source': exec_result['final_code'],
@@ -323,10 +336,10 @@ class NotebookSolver:
             'outputs': []
         })
 
-        # Добавляем результат выполнения в историю
+        # Сводка выполнения в историю
         self._add_execution_to_history(exec_result['execution'])
 
-        # Если требуются выводы — запрашиваем их отдельно
+        # Если требуются выводы
         if segment.get('need_conclusion'):
             self.logger.info("📝 Запрос текстовых выводов по коду...")
             conclusion = self._request_conclusion_for_code(exec_result['execution'])
@@ -337,47 +350,56 @@ class NotebookSolver:
             })
 
     def _process_r_code(self, segment: Dict[str, Any]):
-        """Исправление/дополнение кода: запрашиваем, выполняем, заменяем ячейку."""
+        """Исправление/дополнение кода: исполняем все код-ячейки сегмента по порядку,
+        а последнюю заменяем кодом модели перед запуском.
+        """
         self.logger.info("🔧 Обработка r_code-сегмента (исправление кода)...")
 
-        # Копируем все ячейки, запоминая индекс последней code-ячейки
-        last_code_idx = None
-        for cell in segment['cells']:
-            if cell['type'] == 'code':
-                last_code_idx = len(self.result_cells)
-            self.result_cells.append(self._copy_cell(cell))
+        seg_cells = segment['cells']
+        code_idxs = [i for i, c in enumerate(seg_cells) if c['type'] == 'code']
 
-        # Запрашиваем исправленный код
-        code = self._request_code(segment, is_new=False)
+        if not code_idxs:
+            # Нечего исправлять — просто копируем ячейки.
+            self.logger.warning("⚠ r_code-сегмент без code-ячейки — копируем как есть.")
+            for cell in seg_cells:
+                self.result_cells.append(self._copy_cell(cell))
+            return
 
-        # Выполняем с автоисправлением (пролог = весь код до этого момента)
-        preamble = self._collect_preamble_code()
-        exec_result = self._execute_code_with_fixes(preamble + [code])
+        # Все код-ячейки сегмента, кроме последней — это «локальный пролог сегмента»
+        last_code_local_idx = code_idxs[-1]
+        support_code_sources = [seg_cells[i]['source'] for i in code_idxs[:-1]]
 
-        # Заменяем последнюю code-ячейку на исправленную
-        if last_code_idx is not None:
-            self.result_cells[last_code_idx] = {
-                'cell_type': 'code',
-                'source': exec_result['final_code'],
-                'metadata': {'generated': True, 'revised': True, 'task': 'r_code'},
-                'execution_count': None,
-                'outputs': []
-            }
-        else:
-            # Если code-ячейки не было — добавляем новую
-            self.logger.warning("⚠ Не найдена code-ячейка для замены. Добавляем новую.")
-            self.result_cells.append({
-                'cell_type': 'code',
-                'source': exec_result['final_code'],
-                'metadata': {'generated': True, 'task': 'r_code'},
-                'execution_count': None,
-                'outputs': []
-            })
+        # Просим модель выдать финальный код для последней ячейки
+        code_from_model = self._request_code(segment, is_new=False)
 
-        # Добавляем результат в историю
+        # Формируем план исполнения:
+        # - глобальный пролог (все уже добавленные ранее code-ячейки результата)
+        # - код-ячейки текущего сегмента, КРОМЕ последней
+        # - последняя ячейка — код модели
+        global_preamble = self._collect_preamble_code()
+        exec_cells = global_preamble + support_code_sources + [code_from_model]
+
+        # Запуск с автоисправлением ТОЛЬКО последней ячейки
+        exec_result = self._execute_code_with_fixes(exec_cells)
+
+        # После запуска — добавляем ячейки сегмента в итог,
+        # при этом последнюю заменяем на финальный код (из exec_result)
+        for i, cell in enumerate(seg_cells):
+            if i == last_code_local_idx:
+                self.result_cells.append({
+                    'cell_type': 'code',
+                    'source': exec_result['final_code'],
+                    'metadata': {'generated': True, 'revised': True, 'task': 'r_code'},
+                    'execution_count': None,
+                    'outputs': []
+                })
+            else:
+                self.result_cells.append(self._copy_cell(cell))
+
+        # Фиксируем результат выполнения в историю
         self._add_execution_to_history(exec_result['execution'])
 
-        # Если нужны выводы
+        # Если нужны выводы по коду — запрашиваем отдельно
         if segment.get('need_conclusion'):
             self.logger.info("📝 Запрос текстовых выводов по коду...")
             conclusion = self._request_conclusion_for_code(exec_result['execution'])

@@ -142,7 +142,7 @@ class CodeRunner:
 
         effective_timeout = self.execution_timeout if timeout is None else timeout
         self.logger.info("▶ Выполнение кода...")
-        self.logger.debug("Код:\n" + code)
+        self.logger.info("Код:\n" + code)
 
         try:
             result = self._execute_internal(code, silent=False, timeout=effective_timeout)

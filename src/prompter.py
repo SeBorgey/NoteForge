@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional, Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 class TaskPrompter:
@@ -17,13 +17,20 @@ class TaskPrompter:
     Также возвращает рекомендуемые generation_kwargs для Gemini (например, response_mime_type).
     """
 
-    ALLOWED_LABELS = ("info", "n_code", "r_code", "math", "conclusion", "code_conclusion")
+    ALLOWED_LABELS = (
+        "info",
+        "n_code",
+        "r_code",
+        "math",
+        "conclusion",
+        "code_conclusion",
+    )
 
     def __init__(
         self,
         code_language: str = "Python",
         code_mime: str = "text/plain",  # безопасно для Gemini; "application/json" уже используется в другом месте
-        log_level: int = logging.INFO
+        log_level: int = logging.INFO,
     ):
         self.code_language = code_language
         self.code_mime = code_mime
@@ -36,7 +43,7 @@ class TaskPrompter:
         base_user_text: str,
         label: str,
         need_conclusion: bool = False,
-        extra_hints: Optional[str] = None
+        extra_hints: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Возвращает:
@@ -55,11 +62,15 @@ class TaskPrompter:
         if label not in self.ALLOWED_LABELS:
             raise ValueError(f"Недопустимый label: {label}")
 
-        suffix = self._suffix_for(label=label, need_conclusion=need_conclusion, extra_hints=extra_hints)
+        suffix = self._suffix_for(
+            label=label, need_conclusion=need_conclusion, extra_hints=extra_hints
+        )
         final_text = self._join_tail(base_user_text, suffix)
         gen_kwargs = self._generation_kwargs_for(label=label)
 
-        self.logger.debug(f"Сформирован промпт для '{label}'. Длина base={len(base_user_text)}, tail={len(suffix)}.")
+        self.logger.debug(
+            f"Сформирован промпт для '{label}'. Длина base={len(base_user_text)}, tail={len(suffix)}."
+        )
         return final_text, gen_kwargs
 
     # Внутренняя кухня
@@ -82,11 +93,11 @@ class TaskPrompter:
                 "response_mime_type": self.code_mime  # "text/plain" — модель вернёт просто текст (код)
             }
         # Для прочих — обычный plain
-        return {
-            "response_mime_type": "text/plain"
-        }
+        return {"response_mime_type": "text/plain"}
 
-    def _suffix_for(self, label: str, need_conclusion: bool, extra_hints: Optional[str]) -> str:
+    def _suffix_for(
+        self, label: str, need_conclusion: bool, extra_hints: Optional[str]
+    ) -> str:
         if label == "n_code":
             return self._suffix_n_code(need_conclusion, extra_hints)
         if label == "r_code":
@@ -104,14 +115,7 @@ class TaskPrompter:
     # Конкретные стили
 
     def _suffix_info(self, extra: Optional[str]) -> str:
-        base = """
-Отвечай кратко и по делу.
-- Не пиши код, если это явно не требуется.
-- Используй короткие абзацы и маркированные списки при необходимости.
-- Избегай повторов и общих фраз.
-- Не добавляй преамбул вроде «конечно» или «вот».
-"""
-        return base + (f"\nДополнительно: {extra}\n" if extra else "")
+        return ""
 
     def _suffix_n_code(self, need_conclusion: bool, extra: Optional[str]) -> str:
         base = f"""
