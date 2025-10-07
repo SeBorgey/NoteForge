@@ -152,4 +152,4 @@ class LastCellExecutor:
     @staticmethod
     def _short(s: str, limit: int = 240) -> str:
         s = (s or "").replace("\n", "\\n")
-        return s if 
+        return s if len(s) <= limit else s[: limit - 3] + "..."
