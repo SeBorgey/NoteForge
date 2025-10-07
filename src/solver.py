@@ -168,9 +168,9 @@ class NotebookSolver:
         self.result_cells: List[Dict[str, Any]] = []
 
     def _setup_logger(self, log_level: int, log_file: Optional[str]) -> logging.Logger:
-        """Настраивает логгер с выводом в консоль и (опционально) файл."""
+        """Настраивает логгер: только консоль, без записи в файл."""
         logger = logging.getLogger(f"{__name__}.NotebookSolver")
-        logger.setLevel(logging.DEBUG)  # внутри фильтруем handlers'ами
+        logger.setLevel(logging.DEBUG)  # уровень логгера высокий, фильтруем хендлером
         logger.handlers.clear()
 
         formatter = logging.Formatter(
@@ -178,19 +178,10 @@ class NotebookSolver:
             datefmt='%Y-%m-%d %H:%M:%S'
         )
 
-        # Консольный handler
         console = logging.StreamHandler()
         console.setLevel(log_level)
         console.setFormatter(formatter)
         logger.addHandler(console)
-
-        # Файловый handler (если задан)
-        if log_file:
-            file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-            file_handler.setLevel(logging.DEBUG)  # в файл пишем ВСЁ
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-            logger.info(f"📄 Полные логи сохраняются в: {log_file}")
 
         return logger
 
@@ -399,10 +390,14 @@ class NotebookSolver:
         self.history.add_user(prompt, meta={"kind": "math-request"})
         self.history.add_model(response, meta={"kind": "math"})
 
+        # Нормализуем переносы строк: одиночные \n превращаем в \n\n для корректного отображения в Markdown ячейке
+        import re
+        response_for_nb = re.sub(r'(?<!\n)\n(?!\n)', '\n\n', response)
+
         # Добавляем markdown-ячейку с решением
         self.result_cells.append({
             'cell_type': 'markdown',
-            'source': response,
+            'source': response_for_nb,
             'metadata': {'generated': True, 'task': 'math'}
         })
 

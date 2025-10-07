@@ -16,10 +16,9 @@ def main():
     )
 
     # Параметры
-    API_KEY = config.API  # ЗАМЕНИТЕ НА СВОЙ КЛЮЧ!
+    API_KEY = config.API
     INPUT_NOTEBOOK = "test.ipynb"
     OUTPUT_NOTEBOOK = "homework_solved.ipynb"
-    LOG_FILE = "solver.log"
 
     print("=" * 80)
     print("JUPYTER NOTEBOOK SOLVER with Gemini")
@@ -43,7 +42,7 @@ def main():
     # 3. Создаём исполнитель кода
     runner = CodeRunner(
         kernel_name="python3",
-        startup_timeout=120.0,   # было 30.0
+        startup_timeout=120.0,
         execution_timeout=1800.0,
         preserve_state=True,
         prelude_code="%matplotlib inline\n"
@@ -61,12 +60,12 @@ def main():
         code_runner=runner,
         prompter=prompter,
         log_level=logging.INFO,
-        log_file=LOG_FILE,
+        log_file=None,          # убрали лог-файл
         max_code_fix_attempts=3,
         exec_timeout=60.0
     )
 
-    # 6. Запускаем решение с контекстным менеджером для runner'а
+    # 6. Запуск
     with runner:
         result_path = solver.solve(
             ipynb_path=INPUT_NOTEBOOK,
@@ -74,7 +73,6 @@ def main():
         )
 
     print(f"\n✅ Готово! Результат: {result_path}")
-    print(f"📄 Полные логи: {LOG_FILE}")
 
 
 if __name__ == "__main__":

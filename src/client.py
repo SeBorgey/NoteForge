@@ -3,6 +3,8 @@ import logging
 from collections import deque
 from typing import Optional, Union, List, Dict
 import google.generativeai as genai
+import json
+
 
 
 class GeminiClient:
@@ -152,10 +154,8 @@ class GeminiClient:
 
         Args:
             message: Текст сообщения или список сообщений для диалога.
-                    Поддерживаются parts с inline_data для изображений:
-                    [{"role":"user","parts":[ "текст", {"inline_data":{"mime_type":"image/png","data":"...base64..."}} ]}, ...]
-            **generation_kwargs: Дополнительные параметры для генерации
-                (temperature, max_output_tokens, top_p, top_k, response_mime_type и т.д.)
+                    Поддерживаются parts с inline_data для изображений.
+            **generation_kwargs: Параметры генерации (temperature, max_output_tokens, top_p, top_k, response_mime_type и т.д.)
 
         Returns:
             Текст ответа от модели
@@ -163,50 +163,50 @@ class GeminiClient:
         Raises:
             Exception: Если все попытки запроса завершились неудачей
         """
-        # Превью для логов
-        if isinstance(message, str):
-            msg_preview = f"{message[:50]}..."
-        else:
-            msg_preview = f"История из {len(message)} сообщений"
-        self.logger.info(f"➤ Новый запрос: {msg_preview}")
+        # Полный вывод запроса в лог (без обрезки)
+        def _format_payload(msg: Union[str, List[Dict]]) -> str:
+            if isinstance(msg, str):
+                return msg
+            try:
+                return json.dumps(msg, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(msg)
+
+        payload_str = _format_payload(message)
+        self.logger.info("➤ Новый запрос к LLM (полностью):\n%s", payload_str)
 
         last_exception = None
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                # Соблюдаем квоту
+                # Квота
                 self._wait_if_needed()
-
-                # Регистрируем запрос до отправки (неудачная попытка тоже считается)
+                # Регистрируем запрос (попытка тоже учитывается)
                 self._record_request()
 
-                self.logger.info(f"🔄 Попытка {attempt}/{self.max_retries}: отправка запроса...")
+                self.logger.info("🔄 Попытка %d/%d: отправка...", attempt, self.max_retries)
 
-                # Конфигурация генерации
                 generation_config = None
                 if generation_kwargs:
                     generation_config = genai.types.GenerationConfig(**generation_kwargs)
 
-                # Отправляем запрос:
-                # - если строка — просто строка
-                # - если список словарей (history) — передаём как есть (parts поддерживаются SDK)
+                # Отправка
                 if isinstance(message, str):
                     response = self.model.generate_content(
                         message,
                         generation_config=generation_config
                     )
                 else:
-                    # ВАЖНО: не используем start_chat + send_message, чтобы не терять parts.
                     response = self.model.generate_content(
                         message,
                         generation_config=generation_config
                     )
 
-                # Получаем текст ответа
+                # Текст ответа
                 response_text = self._extract_response_text(response)
 
-                self.logger.info(f"✓ Ответ получен (длина: {len(response_text)} символов)")
-                self.logger.debug(f"Превью ответа: {response_text[:100]}...")
+                # Полный вывод ответа в лог (без обрезки)
+                self.logger.info("⬅ Ответ модели (полностью, %d симв.):\n%s", len(response_text), response_text)
 
                 return response_text
 
@@ -214,16 +214,13 @@ class GeminiClient:
                 last_exception = e
                 error_type = type(e).__name__
                 error_msg = str(e)
-
-                self.logger.error(
-                    f"✗ Ошибка при попытке {attempt}/{self.max_retries}: {error_type}: {error_msg}"
-                )
+                self.logger.error("✗ Ошибка при попытке %d/%d: %s: %s", attempt, self.max_retries, error_type, error_msg)
 
                 if attempt < self.max_retries:
-                    self.logger.info(f"⏳ Ожидание {self.retry_delay} сек перед повторной попыткой...")
+                    self.logger.info("⏳ Ждём %.1f сек перед повторной попыткой...", self.retry_delay)
                     time.sleep(self.retry_delay)
                 else:
-                    self.logger.error(f"✗ Все {self.max_retries} попытки исчерпаны. Запрос провалился.")
+                    self.logger.error("✗ Все %d попытки исчерпаны.", self.max_retries)
 
         raise Exception(
             f"Не удалось выполнить запрос после {self.max_retries} попыток. "
