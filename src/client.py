@@ -14,7 +14,7 @@ class GeminiClient:
     
     def __init__(
         self,
-        api_key: str,
+        api_key: Union[str, List[str]],
         model_name: str = "gemini-2.5-pro",
         requests_per_minute: int = 5,
         max_retries: int = 3,
@@ -25,14 +25,20 @@ class GeminiClient:
         Инициализация клиента Gemini.
         
         Args:
-            api_key: API ключ для Gemini
+            api_key: API ключ для Gemini или список ключей для чередования
             model_name: Название модели
             requests_per_minute: Максимальное количество запросов в минуту
             max_retries: Максимальное количество попыток при ошибке
             retry_delay: Задержка между повытками в секундах
             log_level: Уровень логирования
         """
-        self.api_key = api_key
+        # Обработка одного ключа или списка ключей
+        if isinstance(api_key, str):
+            self.api_keys = [api_key]
+        else:
+            self.api_keys = api_key
+        
+        self.current_key_index = 0
         self.model_name = model_name
         self.requests_per_minute = requests_per_minute
         self.max_retries = max_retries
@@ -43,10 +49,11 @@ class GeminiClient:
         
         # Инициализация клиента Gemini
         try:
-            genai.configure(api_key=self.api_key)
+            genai.configure(api_key=self.api_keys[self.current_key_index])
             self.model = genai.GenerativeModel(self.model_name)
             self.logger.info(f"✓ GeminiClient успешно инициализирован")
             self.logger.info(f"  Модель: {self.model_name}")
+            self.logger.info(f"  Количество API ключей: {len(self.api_keys)}")
             self.logger.info(f"  Лимит запросов: {self.requests_per_minute} в минуту")
         except Exception as e:
             self.logger.error(f"✗ Ошибка инициализации Gemini: {e}")
@@ -95,6 +102,14 @@ class GeminiClient:
         """Настраивает логгер для класса."""
         logger = logging.getLogger(f"{__name__}.GeminiClient")
         return logger
+    
+    def _switch_api_key(self):
+        """Переключает API ключ на следующий в списке."""
+        if len(self.api_keys) > 1:
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+            genai.configure(api_key=self.api_keys[self.current_key_index])
+            self.model = genai.GenerativeModel(self.model_name)  # Пересоздаём модель!
+            self.logger.debug(f"Переключение на API ключ #{self.current_key_index + 1}")
     
     def _wait_if_needed(self):
         """
@@ -152,6 +167,9 @@ class GeminiClient:
         Raises:
             Exception: Если все попытки запроса завершились неудачей
         """
+        # Переключаем API ключ перед каждым запросом
+        self._switch_api_key()
+        
         # Полный вывод запроса в лог (без обрезки)
         def _format_payload(msg: Union[str, List[Dict]]) -> str:
             if isinstance(msg, str):
