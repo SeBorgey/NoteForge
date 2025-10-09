@@ -62,33 +62,28 @@ class LastCellExecutor:
         self.fixer = fixer or NoOpFixer()
 
         self.logger = logging.getLogger(f"{__name__}.LastCellExecutor")
-        # Сколько прологовых ячеек уже реально исполнили в текущем живом ядре
         self._prepared_until: int = 0
 
     def run(
         self,
         cells: List[str],
         prepare_strategy: str = "auto",
-        max_fixes: int = 0  # по умолчанию без автопочинки
+        max_fixes: int = 0  
     ) -> LastCellRunResult:
         assert cells, "Нужна хотя бы одна ячейка."
         pre_cells = cells[:-1]
         last_code = cells[-1]
 
-        # Подготовка состояния (инкрементально; без рестартов)
         ok = self._prepare_state_if_needed(pre_cells, prepare_strategy)
         if not ok:
             raise RuntimeError("Ошибка в подготовительных ячейках.")
 
-        # Первая попытка последней ячейки
         res = self.runner.execute(last_code)
         attempts: List[FixAttempt] = []
         if not res.error:
-            # Эта последняя ячейка теперь считается «выполненной» и в следующий раз станет частью пролога
             self._prepared_until = max(self._prepared_until, len(pre_cells) + 1)
             return LastCellRunResult(True, last_code, res, attempts)
 
-        # Попытки фикса (если включено): переисполняем ТОЛЬКО последнюю ячейку
         for attempt in range(1, max_fixes + 1):
             self.logger.warning(f"⚠ Ошибка в последней ячейке. Попытка исправления {attempt}/{max_fixes}...")
             proposal = self.fixer.suggest_fix(last_code, res.error, res.stdout, res.stderr)
@@ -110,19 +105,15 @@ class LastCellExecutor:
             last_code = proposal
             if not res.error:
                 self.logger.info("✓ Исправление сработало.")
-                # Обновляем отметку «сколько пролога выполнено»: добавилась ещё одна готовая ячейка
                 self._prepared_until = max(self._prepared_until, len(pre_cells) + 1)
                 return LastCellRunResult(True, last_code, res, attempts)
 
-        # Не удалось исправить
         return LastCellRunResult(False, last_code, res, attempts)
 
-    # Внутренняя кухня
     def _prepare_state_if_needed(self, pre_cells: List[str], strategy: str) -> bool:
         if not pre_cells or strategy == "never":
             return True
 
-        # auto/always: исполняем ТОЛЬКО новые прологовые ячейки (хвост), никаких повторов
         start = self._prepared_until
         end = len(pre_cells)
 
@@ -139,7 +130,7 @@ class LastCellExecutor:
                 return False
 
         self._prepared_until = end
-        self.logger.info("✓ Состояние подготовлено (инкрементально).")
+        self.logger.info("✓ Состояние подготовлено")
         return True
 
     @staticmethod

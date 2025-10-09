@@ -11,8 +11,8 @@ from jupyter_client import KernelManager
 
 @dataclass
 class ImageData:
-    mime_type: str           # "image/png", "image/svg+xml", "image/jpeg"
-    data: bytes              # PNG/JPEG: bytes; SVG: utf-8 bytes
+    mime_type: str 
+    data: bytes
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -20,10 +20,10 @@ class ImageData:
 class ExecutionResult:
     stdout: str
     stderr: str
-    result_text: Optional[str]              # repr последнего выражения (если было)
-    images: List[ImageData]                 # картинки этого запуска
-    rich: List[Dict[str, Any]]              # сырой rich-вывод (data/metadata)
-    error: Optional[Dict[str, Any]]         # {"ename","evalue","traceback":[...]} или None
+    result_text: Optional[str]     
+    images: List[ImageData]        
+    rich: List[Dict[str, Any]]     
+    error: Optional[Dict[str, Any]]
     elapsed_sec: float
 
 
@@ -38,7 +38,7 @@ class CodeRunner:
         working_dir: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         startup_timeout: float = 30.0,
-        execution_timeout: float = 1800.0,  # 30 минут по умолчанию
+        execution_timeout: float = 1800.0,
         preserve_state: bool = True,
         prelude_code: Optional[str] = "%matplotlib inline\n",
         log_level: int = logging.INFO,
@@ -46,7 +46,6 @@ class CodeRunner:
         self.kernel_name = kernel_name
         self.working_dir = working_dir or os.getcwd()
         self.env = dict(os.environ, **(env or {}))
-        # Inline-бэкенд для Matplotlib
         self.env.setdefault("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 
         self.startup_timeout = startup_timeout
@@ -57,7 +56,6 @@ class CodeRunner:
         self.km: Optional[KernelManager] = None
         self.kc = None
 
-    # Контекст-менеджер
     def __enter__(self):
         self.start()
         return self
@@ -65,7 +63,6 @@ class CodeRunner:
     def __exit__(self, exc_type, exc, tb):
         self.shutdown(now=True)
 
-    # Жизненный цикл ядра
     def start(self):
         if self.km is not None:
             self.logger.debug("Ядро уже запущено.")
@@ -103,7 +100,6 @@ class CodeRunner:
 
         self.logger.info("🔁 Перезапуск ядра...")
         try:
-            # 1) Обычный restart
             self.km.restart_kernel(now=True)
             self.kc = self.km.client()
             self.kc.start_channels()
@@ -112,26 +108,21 @@ class CodeRunner:
         except Exception as e:
             self.logger.warning(f"Перезапуск ядра не удался: {e}. Пробуем полный рестарт...")
 
-            # 2) Полный рестарт (shutdown → start)
             try:
-                self.shutdown(now=True)  # корректно гасим текущее ядро
+                self.shutdown(now=True)
             except Exception as e2:
                 self.logger.warning(f"Проблема при остановке ядра: {e2}")
 
             self.km = None
-            # Немного подождать, чтобы порт освободился (редко, но помогает)
             time.sleep(1.0)
 
-            # 3) Старт с нуля
             self.start()
 
-        # Prelude после успешного (любого) рестарта
         if self.prelude_code.strip():
             self.logger.debug("Выполняем prelude_code после перезапуска (silent)...")
             self._execute_internal(self.prelude_code, silent=True, timeout=self.execution_timeout)
 
 
-    # Публичный API
     def execute(self, code: str, timeout: Optional[float] = None) -> ExecutionResult:
         if self.km is None or self.kc is None:
             self.start()
@@ -160,7 +151,6 @@ class CodeRunner:
             )
         return result
 
-    # Внутреннее исполнение
     def _execute_internal(self, code: str, silent: bool, timeout: Optional[float]) -> ExecutionResult:
         t0 = time.perf_counter()
         msg_id = self.kc.execute(code, silent=silent, store_history=True, allow_stdin=False, stop_on_error=False)
@@ -182,7 +172,6 @@ class CodeRunner:
                         self.km.interrupt_kernel()
                     except Exception:
                         pass
-                    # Пробрасываем исключение наверх — НЕ превращаем это в «ошибку кода» для LLM
                     raise TimeoutError(f"Execution exceeded {timeout} seconds")
                 continue
 

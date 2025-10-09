@@ -75,7 +75,6 @@ class NotebookTaskSplitter:
 
         prompt = self._build_prompt(py_text, len(cells))
 
-        # Запрашиваем у модели чистый JSON
         response_text = self.gemini.send_message(
             prompt,
             temperature=self.temperature,
@@ -94,10 +93,6 @@ class NotebookTaskSplitter:
         self.logger.info(f"✓ Получено сегментов: {len(result)}")
         return result
 
-    # ---------------------------
-    # Вспомогательные методы
-    # ---------------------------
-
     def _read_notebook(self, path: str):
         try:
             nb = nbformat.read(path, as_version=4)
@@ -110,7 +105,6 @@ class NotebookTaskSplitter:
         cells = []
         for idx, cell in enumerate(nb.cells):
             if cell.cell_type not in ("code", "markdown", "raw"):
-                # Встретились нестандартные типы - приведём к raw
                 ctype = "raw"
             else:
                 ctype = cell.cell_type
@@ -147,7 +141,7 @@ class NotebookTaskSplitter:
             else:  # code
                 lines.append(src)
 
-            lines.append("")  # пустая строка-разделитель
+            lines.append("")
 
         return "\n".join(lines)
 
@@ -219,7 +213,6 @@ Code: Код с плейсхолдером # TODO
             self.logger.error(f"✗ Ответ модели не JSON: {e}")
             raise
 
-        # Нормализуем верхний уровень: допускаем, что модель вернет просто список
         if isinstance(data, list):
             data = {"segments": data}
 
@@ -247,7 +240,6 @@ Code: Код с плейсхолдером # TODO
         raw_segments = model_data["segments"]
         normalized: List[Tuple[str, List[int], bool]] = []
 
-        # 1) нормализация и дробление разрывов
         for i, seg in enumerate(raw_segments, start=1):
             if not isinstance(seg, dict):
                 raise ValueError(f"Элемент segments[{i}] должен быть объектом.")
@@ -260,7 +252,6 @@ Code: Код с плейсхолдером # TODO
                     f"'cell_indices' должен быть непустым списком в segments[{i}]."
                 )
 
-            # валидируем индексы
             cleaned = []
             for x in indices:
                 if not isinstance(x, int):
@@ -271,14 +262,12 @@ Code: Код с плейсхолдером # TODO
                     )
                 cleaned.append(x)
 
-            # need_conclusion: только для n_code/r_code, иначе False
             need_conclusion = False
             if label in ("n_code", "r_code"):
                 nc = seg.get("need_conclusion", False)
                 if isinstance(nc, bool):
                     need_conclusion = nc
                 else:
-                    # если прилетела строка/число — мягко приведём и предупредим
                     if nc in (0, 1):
                         need_conclusion = bool(nc)
                         self.logger.warning(
@@ -297,14 +286,11 @@ Code: Код с плейсхолдером # TODO
                         )
 
             cleaned = sorted(set(cleaned))
-            # дробим на непрерывные подпоследовательности
             for rng in self._split_into_contiguous_runs(cleaned):
                 normalized.append((label, rng, need_conclusion))
 
-        # 2) сортируем по старту
         normalized.sort(key=lambda x: x[1][0])
 
-        # 3) проверяем перекрытия
         occupied = set()
         final_segments: List[Tuple[str, List[int], bool]] = []
         for label, idxs, need_conclusion in normalized:
@@ -315,7 +301,6 @@ Code: Код с плейсхолдером # TODO
                 occupied.add(i)
             final_segments.append((label, idxs, need_conclusion))
 
-        # 4) покрываем пропуски info-сегментами
         missing = [i for i in range(total_cells) if i not in occupied]
         if missing:
             self.logger.warning(
@@ -325,10 +310,8 @@ Code: Код с плейсхолдером # TODO
             info_runs = self._split_into_contiguous_runs(missing)
             for rng in info_runs:
                 final_segments.append(("info", rng, False))
-            # Пересобираем в правильном порядке
             final_segments.sort(key=lambda x: x[1][0])
 
-        # Превращаем в словари
         return [
             {
                 "label": label,
@@ -363,7 +346,6 @@ Code: Код с плейсхолдером # TODO
         for seg in segments:
             idxs = seg["cell_indices"]
             seg_cells = [cells[i] for i in idxs]
-            # Собираем текст сегмента (чистый текст без маркеров)
             text = "\n\n".join(c["source"] for c in seg_cells)
             result.append(
                 {

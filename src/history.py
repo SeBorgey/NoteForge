@@ -4,14 +4,12 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
-from runner import ExecutionResult  # опционально: для add_execution_result()
+from runner import ExecutionResult
 
 
 @dataclass
 class _Msg:
-    role: str  # "user" | "model"
-    # В parts теперь можно класть не только строки, но и dict-части вроде:
-    # {"inline_data": {"mime_type": "image/png", "data": "<base64>"}}
+    role: str
     parts: List[Any]
     meta: Dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -19,7 +17,6 @@ class _Msg:
 
 @dataclass
 class _Branch:
-    # индекс сообщения-«якоря» в committed (обычно последний user перед кодом)
     anchor_idx: int
     messages: List[_Msg] = field(default_factory=list)
 
@@ -49,7 +46,6 @@ class ConversationHistory:
         self._branch: Optional[_Branch] = None
 
         self.logger = logging.getLogger(f"{__name__}.ConversationHistory")
-    # ------------- Базовые операции (строковые) -------------
 
     def add_user(self, text: str, meta: Optional[Dict[str, Any]] = None) -> str:
         return self._add("user", text, meta)
@@ -57,7 +53,6 @@ class ConversationHistory:
     def add_model(self, text: str, meta: Optional[Dict[str, Any]] = None) -> str:
         return self._add("model", text, meta)
 
-    # ------------- Операции с parts (строки + inline-данные) -------------
 
     def add_user_parts(self, parts: List[Any], meta: Optional[Dict[str, Any]] = None) -> str:
         return self._add_parts("user", parts, meta)
@@ -65,7 +60,6 @@ class ConversationHistory:
     def add_model_parts(self, parts: List[Any], meta: Optional[Dict[str, Any]] = None) -> str:
         return self._add_parts("model", parts, meta)
 
-    # ------------- Низкоуровневые добавления -------------
 
     def _add(self, role: str, text: str, meta: Optional[Dict[str, Any]]) -> str:
         if role not in self.ALLOWED_ROLES:
@@ -89,7 +83,6 @@ class ConversationHistory:
             self._committed.append(msg)
         return msg.id
 
-    # ------------- Работа с ветками -------------
 
     def open_branch(
         self, anchor: Optional[int] = None, anchor_role: str = "user"
@@ -157,17 +150,14 @@ class ConversationHistory:
             self.logger.info("Ветка коммичена без squash (развёрнута целиком).")
             return
 
-        # squash: ищем последний ответ ассистента
         last_assistant = self._find_last_in_iter(br.messages, role="model")
         if last_assistant is None:
-            # если ветка оканчивается на user — считаем это ошибкой протокола
             raise RuntimeError(
                 "Нельзя сделать squash: нет финального ответа ассистента в ветке."
             )
 
         new_history.append(last_assistant)
 
-        # Сохраняем последнюю сводку выполнения (если есть и если просили)
         if keep_last_exec_summary:
             last_exec = self._find_last_exec_summary(br.messages)
             if last_exec:
@@ -178,7 +168,6 @@ class ConversationHistory:
             "Ветка коммичена со squash: оставлен один финальный ответ ассистента."
         )
 
-    # ------------- Доступ к истории -------------
 
     def get_history(self, include_branch: bool = True) -> List[Dict[str, Any]]:
         """
@@ -226,7 +215,6 @@ class ConversationHistory:
     def __len__(self) -> int:
         return len(self._committed) + (len(self._branch.messages) if self._branch else 0)
 
-    # ------------- Удобства: фиксация выполнения -------------
 
     def add_execution_result(
         self,
@@ -283,7 +271,6 @@ class ConversationHistory:
         if not attach_images:
             return self.add_user(text, meta=m)
 
-        # Сборка parts с картинками
         parts: List[Any] = [text]
         attached = 0
         for img in (exec_res.images or []):
@@ -309,7 +296,6 @@ class ConversationHistory:
         m["images_attached"] = attached
         return self.add_user_parts(parts, meta=m)
 
-    # ------------- Вспомогательное -------------
 
     def _find_last_index(self, role: Optional[str] = None) -> Optional[int]:
         if role is None:

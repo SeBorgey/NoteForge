@@ -5,9 +5,8 @@ from typing import Any, Dict, Optional, Tuple
 class TaskPrompter:
     """
     Формирует «приписку» (tail/suffix) к пользовательскому сообщению в зависимости от типа задачи.
-    Это НЕ системный промпт — просто добавка к концу prompt'а.
+    Это НЕ системный промпт — просто добавка к концу промпта.
 
-    Идея:
       - Для code-задач (n_code/r_code) — только код, без Markdown/объяснений/«выводов».
       - Для math — формульное решение.
       - Для conclusion — краткий финальный ответ.
@@ -28,15 +27,11 @@ class TaskPrompter:
 
     def __init__(
         self,
-        code_language: str = "Python",
-        code_mime: str = "text/plain",  # безопасно для Gemini; "application/json" уже используется в другом месте
-        log_level: int = logging.INFO,
+        code_mime: str = "text/plain",
     ):
-        self.code_language = code_language
         self.code_mime = code_mime
         self.logger = logging.getLogger(f"{__name__}.TaskPrompter")
 
-    # Публичный API
 
     def compose(
         self,
@@ -73,14 +68,12 @@ class TaskPrompter:
         )
         return final_text, gen_kwargs
 
-    # Внутренняя кухня
 
     def _join_tail(self, base: str, tail: str) -> str:
         if not base:
             return tail
         if not tail:
             return base
-        # Простой читаемый разделитель, чтобы «приписка» была явно отделена
         return f"{base.rstrip()}\n\n--- СТИЛЬ ОТВЕТА ---\n{tail.strip()}\n"
 
     def _generation_kwargs_for(self, label: str) -> Dict[str, Any]:
@@ -90,9 +83,8 @@ class TaskPrompter:
         """
         if label in ("n_code", "r_code"):
             return {
-                "response_mime_type": self.code_mime  # "text/plain" — модель вернёт просто текст (код)
+                "response_mime_type": self.code_mime
             }
-        # Для прочих — обычный plain
         return {"response_mime_type": "text/plain"}
 
     def _suffix_for(
@@ -112,14 +104,13 @@ class TaskPrompter:
             return self._suffix_info(extra_hints)
         return ""
 
-    # Конкретные стили
 
     def _suffix_info(self, extra: Optional[str]) -> str:
         return ""
 
     def _suffix_n_code(self, need_conclusion: bool, extra: Optional[str]) -> str:
-        base = f"""
-Верни только исполняемый {self.code_language}-код одной ячейки.
+        base = """
+Верни только исполняемый код одной ячейки.
 Требования к выводу:
 - Без Markdown, без тройных кавычек и бэктиков, без пояснений до/после.
 
@@ -139,8 +130,8 @@ print("Hello, world!")
         return base + (f"\nДополнительно: {extra}\n" if extra else "")
 
     def _suffix_r_code(self, need_conclusion: bool, extra: Optional[str]) -> str:
-        base = f"""
-Исправь/дополни существующий {self.code_language}-код.
+        base = """
+Исправь/дополни существующий код.
 Требования к выводу:
 - Верни полный финальный код ячейки (не diff и не патч), без Markdown и без тройных кавычек.
 

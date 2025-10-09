@@ -142,33 +142,24 @@ class NotebookSolver:
         self.max_code_fix_attempts = max_code_fix_attempts
         self.exec_timeout = exec_timeout
 
-        # История разговора с моделью
         self.history = ConversationHistory(log_level=log_level)
 
-        # Фиксер ошибок через Gemini
         self.fixer = GeminiFixer(self.gemini, self.history, self.prompter)
 
-        # Executor для запуска последней ячейки с подготовкой состояния
         self.executor = LastCellExecutor(
             runner=self.runner,
-            fixer=None,  # фиксер не используем внутри executor'а
+            fixer=None,
             log_level=log_level
         )
 
-        # Настройка логирования
         self.logger = self._setup_logger(log_level, log_file)
 
-        # Накопитель результирующих ячеек
         self.result_cells: List[Dict[str, Any]] = []
 
     def _setup_logger(self, log_level: int, log_file: Optional[str]) -> logging.Logger:
         """Настраивает логгер: только консоль, без записи в файл."""
         logger = logging.getLogger(f"{__name__}.NotebookSolver")
         return logger
-
-    # =========================================================================
-    # ПУБЛИЧНЫЙ API
-    # =========================================================================
 
     def _save_notebook_py(self, output_py_path: str):
         """
@@ -187,7 +178,7 @@ class NotebookSolver:
             if ctype in ('markdown', 'raw'):
                 for line in src.splitlines():
                     lines.append("# " + line)
-            else:  # code
+            else:
                 lines.append(src)
             lines.append("")
 
@@ -207,7 +198,6 @@ class NotebookSolver:
 
         start_time = time.time()
 
-        # Определяем будущие пути для ipynb и py (py нужен уже сейчас для снапшотов)
         if output_path is None:
             p = Path(ipynb_path)
             planned_ipynb = p.parent / f"{p.stem}_solved{p.suffix}"
@@ -216,14 +206,12 @@ class NotebookSolver:
         planned_py = planned_ipynb.with_suffix(".py")
 
         try:
-            # 1. Разбиваем ноутбук на сегменты
             self.logger.info("🔍 Разбиение ноутбука на сегменты задач...")
             segments = self.splitter.segment_notebook(ipynb_path)
             self.logger.info(f"✓ Получено сегментов: {len(segments)}")
             for i, seg in enumerate(segments, 1):
                 self.logger.info(f"  [{i}] {seg['label']} ({len(seg['cells'])} ячеек)")
 
-            # 2. Обрабатываем каждый сегмент
             self.result_cells.clear()
 
             for idx, segment in enumerate(segments, start=1):
@@ -234,14 +222,11 @@ class NotebookSolver:
 
                 self._process_segment(segment)
 
-                # Сохраняем промежуточный .py снимок после каждого сегмента
                 self._save_notebook_py(str(planned_py))
 
-            # 3. Сохраняем итоговый ноутбук
             final_ipynb_path = str(planned_ipynb) if output_path is None else str(planned_ipynb)
             self._save_notebook(final_ipynb_path)
 
-            # И финальный .py снимок
             self._save_notebook_py(str(planned_py))
 
             elapsed = time.time() - start_time
@@ -254,17 +239,12 @@ class NotebookSolver:
             return final_ipynb_path
 
         except Exception:
-            # На любой ошибке — сохраняем текущий .py снимок и пробрасываем исключение
             try:
                 self._save_notebook_py(str(planned_py))
                 self.logger.info(f"📝 Снимок .py сохранён перед остановкой: {planned_py}")
             except Exception as _:
                 pass
             raise
-
-    # =========================================================================
-    # ОБРАБОТКА СЕГМЕНТОВ
-    # =========================================================================
 
     def _process_segment(self, segment: Dict[str, Any]):
         """Маршрутизирует обработку сегмента в зависимости от label."""
@@ -289,11 +269,9 @@ class NotebookSolver:
         """Info-сегмент: копируем ячейки и добавляем текст в историю для контекста."""
         self.logger.info("ℹ️ Обработка info-сегмента (контекст для модели)...")
 
-        # Добавляем текст в историю как user-сообщение
         self.history.add_user(segment['text'], meta={"kind": "info"})
         self.logger.debug(f"USER (info):\n{self._short(segment['text'], 600)}")
 
-        # Копируем ячейки в результат
         for cell in segment['cells']:
             self.result_cells.append(self._copy_cell(cell))
 
@@ -307,27 +285,18 @@ class NotebookSolver:
 
         seg_cells = segment['cells']
 
-        # Код-ячейки сегмента, которые должны быть выполнены до новой ячейки
         support_code_sources = [c['source'] for c in seg_cells if c['type'] == 'code']
 
-        # Запрашиваем новый код у модели
         code_from_model = self._request_code(segment, is_new=True)
 
-        # План выполнения:
-        # - глобальный пролог (все ранее подтверждённые code-ячейки)
-        # - код-ячейки текущего сегмента (как поддерживающие)
-        # - новая ячейка с кодом модели
         global_preamble = self._collect_preamble_code()
         exec_cells = global_preamble + support_code_sources + [code_from_model]
 
-        # Запуск с автоисправлением ТОЛЬКО последней ячейки
         exec_result = self._execute_code_with_fixes(exec_cells)
 
-        # После выполнения — добавляем в результат все ячейки сегмента как есть
         for cell in seg_cells:
             self.result_cells.append(self._copy_cell(cell))
 
-        # И ДОБАВЛЯЕМ новую ячейку с финальным кодом
         self.result_cells.append({
             'cell_type': 'code',
             'source': exec_result['final_code'],
@@ -336,10 +305,8 @@ class NotebookSolver:
             'outputs': []
         })
 
-        # Сводка выполнения в историю
         self._add_execution_to_history(exec_result['execution'])
 
-        # Если требуются выводы
         if segment.get('need_conclusion'):
             self.logger.info("📝 Запрос текстовых выводов по коду...")
             conclusion = self._request_conclusion_for_code(exec_result['execution'])
@@ -359,31 +326,21 @@ class NotebookSolver:
         code_idxs = [i for i, c in enumerate(seg_cells) if c['type'] == 'code']
 
         if not code_idxs:
-            # Нечего исправлять — просто копируем ячейки.
             self.logger.warning("⚠ r_code-сегмент без code-ячейки — копируем как есть.")
             for cell in seg_cells:
                 self.result_cells.append(self._copy_cell(cell))
             return
 
-        # Все код-ячейки сегмента, кроме последней — это «локальный пролог сегмента»
         last_code_local_idx = code_idxs[-1]
         support_code_sources = [seg_cells[i]['source'] for i in code_idxs[:-1]]
 
-        # Просим модель выдать финальный код для последней ячейки
         code_from_model = self._request_code(segment, is_new=False)
 
-        # Формируем план исполнения:
-        # - глобальный пролог (все уже добавленные ранее code-ячейки результата)
-        # - код-ячейки текущего сегмента, КРОМЕ последней
-        # - последняя ячейка — код модели
         global_preamble = self._collect_preamble_code()
         exec_cells = global_preamble + support_code_sources + [code_from_model]
 
-        # Запуск с автоисправлением ТОЛЬКО последней ячейки
         exec_result = self._execute_code_with_fixes(exec_cells)
 
-        # После запуска — добавляем ячейки сегмента в итог,
-        # при этом последнюю заменяем на финальный код (из exec_result)
         for i, cell in enumerate(seg_cells):
             if i == last_code_local_idx:
                 self.result_cells.append({
@@ -396,10 +353,8 @@ class NotebookSolver:
             else:
                 self.result_cells.append(self._copy_cell(cell))
 
-        # Фиксируем результат выполнения в историю
         self._add_execution_to_history(exec_result['execution'])
 
-        # Если нужны выводы по коду — запрашиваем отдельно
         if segment.get('need_conclusion'):
             self.logger.info("📝 Запрос текстовых выводов по коду...")
             conclusion = self._request_conclusion_for_code(exec_result['execution'])
@@ -413,32 +368,26 @@ class NotebookSolver:
         """Математическое решение: запрашиваем, добавляем markdown-ячейку."""
         self.logger.info("🧮 Обработка math-сегмента...")
 
-        # Копируем исходные ячейки
         for cell in segment['cells']:
             self.result_cells.append(self._copy_cell(cell))
 
-        # Формируем промпт
         prompt, gen_kwargs = self.prompter.compose(
             base_user_text=segment['text'],
             label='math'
         )
 
-        # Отправляем в модель
         history = self.history.with_next_user(prompt)
         self.logger.debug(f"USER (math):\n{self._short(prompt, 600)}")
 
         response = self.gemini.send_message(history, **gen_kwargs)
         self.logger.debug(f"MODEL (math):\n{self._short(response, 600)}")
 
-        # Добавляем в историю
         self.history.add_user(prompt, meta={"kind": "math-request"})
         self.history.add_model(response, meta={"kind": "math"})
 
-        # Нормализуем переносы строк: одиночные \n превращаем в \n\n для корректного отображения в Markdown ячейке
         import re
         response_for_nb = re.sub(r'(?<!\n)\n(?!\n)', '\n\n', response)
 
-        # Добавляем markdown-ячейку с решением
         self.result_cells.append({
             'cell_type': 'markdown',
             'source': response_for_nb,
@@ -449,37 +398,28 @@ class NotebookSolver:
         """Выводы: запрашиваем, добавляем markdown-ячейку."""
         self.logger.info("📊 Обработка conclusion-сегмента...")
 
-        # Копируем исходные ячейки
         for cell in segment['cells']:
             self.result_cells.append(self._copy_cell(cell))
 
-        # Формируем промпт
         prompt, gen_kwargs = self.prompter.compose(
             base_user_text=segment['text'],
             label='conclusion'
         )
 
-        # Отправляем в модель
         history = self.history.with_next_user(prompt)
         self.logger.debug(f"USER (conclusion):\n{self._short(prompt, 600)}")
 
         response = self.gemini.send_message(history, **gen_kwargs)
         self.logger.debug(f"MODEL (conclusion):\n{self._short(response, 600)}")
 
-        # Добавляем в историю
         self.history.add_user(prompt, meta={"kind": "conclusion-request"})
         self.history.add_model(response, meta={"kind": "conclusion"})
 
-        # Добавляем markdown-ячейку
         self.result_cells.append({
             'cell_type': 'markdown',
             'source': response,
             'metadata': {'generated': True, 'task': 'conclusion'}
         })
-
-    # =========================================================================
-    # РАБОТА С КОДОМ
-    # =========================================================================
 
     def _request_code(self, segment: Dict[str, Any], is_new: bool) -> str:
         """Запрашивает код у модели (новый или исправленный)."""
@@ -488,7 +428,7 @@ class NotebookSolver:
         prompt, gen_kwargs = self.prompter.compose(
             base_user_text=segment['text'],
             label=label,
-            need_conclusion=False  # выводы запросим после выполнения
+            need_conclusion=False
         )
 
         history = self.history.with_next_user(prompt)
@@ -497,7 +437,6 @@ class NotebookSolver:
         response = self.gemini.send_message(history, **gen_kwargs)
         self.logger.debug(f"MODEL ({label}):\n{self._short(response, 800)}")
 
-        # Добавляем в историю
         self.history.add_user(prompt, meta={"kind": f"{label}-request"})
         self.history.add_model(response, meta={"kind": "code", "label": label})
 
@@ -514,7 +453,6 @@ class NotebookSolver:
 
         self.logger.info("▶️ Выполнение кода с возможностью автоисправления...")
 
-        # Открываем ветку (якорь — последнее сообщение модели, т.е. код)
         self.history.open_branch(anchor=None, anchor_role='model')
 
         last_code = cells[-1]
@@ -526,13 +464,12 @@ class NotebookSolver:
                 attempt += 1
                 self.logger.info(f"⚙️ Попытка #{attempt}/{self.max_code_fix_attempts + 1}...")
 
-                # Пролог + текущая последняя. Executor сам решает, что из пролога ещё не исполнялось.
                 all_cells = cells[:-1] + [last_code]
 
                 result = self.executor.run(
                     cells=all_cells,
-                    prepare_strategy='auto',  # инкрементально, без рестартов и без повторов
-                    max_fixes=0               # автопочинка делаем сами только для последней ячейки
+                    prepare_strategy='auto', 
+                    max_fixes=0
                 )
 
                 if result.success:
@@ -563,7 +500,6 @@ class NotebookSolver:
                     self.logger.warning("⚠️ Фиксер не предложил изменений. Останавливаемся.")
                     break
 
-                # Повторно пробуем ТОЛЬКО последнюю ячейку (пролог не трогаем)
                 last_code = fixed_code
 
             self.logger.error("❌ Не удалось получить рабочий код")
@@ -585,10 +521,8 @@ class NotebookSolver:
         Добавляет сводку выполнения в историю как user-сообщение и прикладывает изображения
         (image/png, image/jpeg) в виде inline_data, чтобы модель реально их «видела».
         """
-        # Локальный импорт, чтобы не трогать верхние импорты
         import base64
 
-        # 1) Текстовая сводка
         parts_text = []
 
         parts_text.append("[Результат выполнения предыдущей ячейки]")
@@ -612,12 +546,10 @@ class NotebookSolver:
 
         text_blob = "\n".join(parts_text)
 
-        # 2) Собираем parts: сначала текст, далее картинки как inline_data
         parts: List[Any] = [text_blob]
 
-        # Правила вложения картинок
         allowed_mimes = {"image/png", "image/jpeg"}
-        max_images = 3  # можно настроить
+        max_images = 3
         attached = 0
 
         for img in exec_res.images:
@@ -643,20 +575,12 @@ class NotebookSolver:
 
     def _request_conclusion_for_code(self, exec_res: ExecutionResult) -> str:
         """
-        Запрашивает выводы только по фактическим результатам выполнения предыдущей ячейки.
-        Модель увидит сводку выполнения (stdout/stderr/result_text/счётчик изображений) из истории,
-        поэтому здесь просим краткие, приземлённые выводы без домыслов.
+        Запрашивает выводы по результатам предыдущей ячейки.
+        Текст запроса и стиль полностью формируются в TaskPrompter.
         """
-        prompt = (
-            "Сформулируй краткие выводы по результатам выполнения предыдущей ячейки. "
-            "Опираться только на фактический вывод (stdout, stderr, результат последнего выражения) "
-            "и на явные подсказки/описания графиков, если они были. "
-            "Если данных недостаточно — скажи об этом."
-        )
-
         prompt_full, gen_kwargs = self.prompter.compose(
-            base_user_text=prompt,
-            label='code_conclusion'
+            base_user_text="",
+            label="code_conclusion"
         )
 
         history = self.history.with_next_user(prompt_full)
@@ -665,15 +589,10 @@ class NotebookSolver:
         response = self.gemini.send_message(history, **gen_kwargs)
         self.logger.debug(f"MODEL (conclusion for code):\n{self._short(response, 400)}")
 
-        # Добавляем в историю
         self.history.add_user(prompt_full, meta={"kind": "code-conclusion-request"})
         self.history.add_model(response, meta={"kind": "code-conclusion"})
 
         return response
-
-    # =========================================================================
-    # ВСПОМОГАТЕЛЬНОЕ
-    # =========================================================================
 
     def _collect_preamble_code(self) -> List[str]:
         """Собирает все code-ячейки из уже обработанных сегментов (для пролога)."""
@@ -700,7 +619,7 @@ class NotebookSolver:
                 'source': cell['source'],
                 'metadata': {}
             }
-        else:  # raw
+        else:
             return {
                 'cell_type': 'raw',
                 'source': cell['source'],
@@ -724,7 +643,7 @@ class NotebookSolver:
                     source=cell_dict['source'],
                     metadata=cell_dict.get('metadata', {})
                 )
-            else:  # raw
+            else:
                 cell = nbformat.v4.new_raw_cell(
                     source=cell_dict['source'],
                     metadata=cell_dict.get('metadata', {})
