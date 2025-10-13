@@ -43,10 +43,8 @@ class GeminiFixer:
         """
         if not error:
             return None
-
         err_msg = f"{error.get('ename')}: {error.get('evalue')}"
         traceback = "\n".join(error.get('traceback', []))
-
         fix_request = f"""
 Предыдущий код вызвал ошибку при выполнении.
 
@@ -69,33 +67,30 @@ Stderr:
 
 Исправь ошибку и верни полный исправленный код.
 """.strip()
-
         self.logger.info("🔧 Запрос исправления кода у модели...")
-
-        # Формируем промпт с суффиксом для r_code
         full_prompt, gen_kwargs = self.prompter.compose(
             base_user_text=fix_request,
             label="r_code",
             need_conclusion=False
         )
-
-        # Получаем историю + новый user-запрос (не добавляя его в историю пока)
         history_for_request = self.history.with_next_user(full_prompt)
-
-        # Логируем
         self.logger.debug(f"USER (fix request):\n{full_prompt[:800]}...")
-
-        # Отправляем в модель
         response = self.gemini.send_message(history_for_request, **gen_kwargs)
-
         self.logger.debug(f"MODEL (fix response):\n{response[:800]}...")
-
-        # Теперь добавляем ОБА сообщения в историю (в открытую ветку)
+        import re
+        t = response.strip()
+        m = re.search(r'```[a-zA-Z0-9_-]*\s*\n(.*?)\n```', t, flags=re.S)
+        if m:
+            t = m.group(1)
+        else:
+            m2 = re.search(r'```[a-zA-Z0-9_-]*\s*(.*?)\s*```', t, flags=re.S)
+            if m2:
+                t = m2.group(1)
+        t = re.sub(r'^\s*python\s*\r?\n', '', t, flags=re.I)
+        cleaned = t.strip()
         self.history.add_user(full_prompt, meta={"kind": "fix-request"})
-        self.history.add_model(response, meta={"kind": "fix-response"})
-
-        return response
-
+        self.history.add_model(cleaned, meta={"kind": "fix-response"})
+        return cleaned
 
 class NotebookSolver:
     """
@@ -422,25 +417,30 @@ class NotebookSolver:
         })
 
     def _request_code(self, segment: Dict[str, Any], is_new: bool) -> str:
-        """Запрашивает код у модели (новый или исправленный)."""
         label = 'n_code' if is_new else 'r_code'
-
         prompt, gen_kwargs = self.prompter.compose(
             base_user_text=segment['text'],
             label=label,
             need_conclusion=False
         )
-
         history = self.history.with_next_user(prompt)
         self.logger.debug(f"USER ({label}):\n{self._short(prompt, 800)}")
-
         response = self.gemini.send_message(history, **gen_kwargs)
         self.logger.debug(f"MODEL ({label}):\n{self._short(response, 800)}")
-
+        import re
+        t = response.strip()
+        m = re.search(r'```[a-zA-Z0-9_-]*\s*\n(.*?)\n```', t, flags=re.S)
+        if m:
+            t = m.group(1)
+        else:
+            m2 = re.search(r'```[a-zA-Z0-9_-]*\s*(.*?)\s*```', t, flags=re.S)
+            if m2:
+                t = m2.group(1)
+        t = re.sub(r'^\s*python\s*\r?\n', '', t, flags=re.I)
+        code = t.strip()
         self.history.add_user(prompt, meta={"kind": f"{label}-request"})
-        self.history.add_model(response, meta={"kind": "code", "label": label})
-
-        return response
+        self.history.add_model(code, meta={"kind": "code", "label": label})
+        return code
 
     def _execute_code_with_fixes(self, cells: List[str]) -> Dict[str, Any]:
         """

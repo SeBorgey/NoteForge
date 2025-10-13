@@ -51,7 +51,6 @@ def main():
 
 
     prompter = TaskPrompter(
-        code_language="Python"
     )
 
     solver = NotebookSolver(
