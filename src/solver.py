@@ -312,9 +312,6 @@ class NotebookSolver:
             })
 
     def _process_r_code(self, segment: Dict[str, Any]):
-        """Исправление/дополнение кода: исполняем все код-ячейки сегмента по порядку,
-        а последнюю заменяем кодом модели перед запуском.
-        """
         self.logger.info("🔧 Обработка r_code-сегмента (исправление кода)...")
 
         seg_cells = segment['cells']
@@ -326,10 +323,20 @@ class NotebookSolver:
                 self.result_cells.append(self._copy_cell(cell))
             return
 
-        last_code_local_idx = code_idxs[-1]
-        support_code_sources = [seg_cells[i]['source'] for i in code_idxs[:-1]]
+        target_abs = segment.get('rcode_target', None)
+        target_local_idx = None
+        if isinstance(target_abs, int):
+            for i, c in enumerate(seg_cells):
+                if c.get('index') == target_abs and c.get('type') == 'code':
+                    target_local_idx = i
+                    break
+        if target_local_idx is None:
+            target_local_idx = code_idxs[-1]
 
-        code_from_model = self._request_code(segment, is_new=False)
+        support_code_sources = [seg_cells[i]['source'] for i in code_idxs if i < target_local_idx]
+
+        code_segment = {'text': seg_cells[target_local_idx]['source']}
+        code_from_model = self._request_code(code_segment, is_new=False)
 
         global_preamble = self._collect_preamble_code()
         exec_cells = global_preamble + support_code_sources + [code_from_model]
@@ -337,7 +344,7 @@ class NotebookSolver:
         exec_result = self._execute_code_with_fixes(exec_cells)
 
         for i, cell in enumerate(seg_cells):
-            if i == last_code_local_idx:
+            if i == target_local_idx:
                 self.result_cells.append({
                     'cell_type': 'code',
                     'source': exec_result['final_code'],

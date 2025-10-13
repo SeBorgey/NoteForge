@@ -19,48 +19,34 @@ class GeminiClient:
         requests_per_minute: int = 5,
         max_retries: int = 3,
         retry_delay: float = 1.0,
-        log_level: int = logging.INFO
+        log_level: int = logging.INFO,
+        default_generation_kwargs: Optional[Dict] = None
     ):
-        """
-        Инициализация клиента Gemini.
-        
-        Args:
-            api_key: API ключ для Gemini или список ключей для чередования
-            model_name: Название модели
-            requests_per_minute: Максимальное количество запросов в минуту
-            max_retries: Максимальное количество попыток при ошибке
-            retry_delay: Задержка между повытками в секундах
-            log_level: Уровень логирования
-        """
-        # Обработка одного ключа или списка ключей
         if isinstance(api_key, str):
             self.api_keys = [api_key]
         else:
             self.api_keys = api_key
-        
+
         self.current_key_index = 0
         self.model_name = model_name
         self.requests_per_minute = requests_per_minute
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        
-        # Настройка логирования
+        self.default_generation_kwargs = dict(default_generation_kwargs or {})
+
         self.logger = self._setup_logger(log_level)
-        
-        # Инициализация клиента Gemini
+
         try:
             genai.configure(api_key=self.api_keys[self.current_key_index])
             self.model = genai.GenerativeModel(self.model_name)
-            self.logger.info(f"✓ GeminiClient успешно инициализирован")
+            self.logger.info("✓ GeminiClient успешно инициализирован")
             self.logger.info(f"  Модель: {self.model_name}")
             self.logger.info(f"  Количество API ключей: {len(self.api_keys)}")
             self.logger.info(f"  Лимит запросов: {self.requests_per_minute} в минуту")
         except Exception as e:
             self.logger.error(f"✗ Ошибка инициализации Gemini: {e}")
             raise
-        
-        # Очередь для отслеживания времени запросов
-        # Хранит timestamp последних N запросов
+
         self.request_times = deque(maxlen=self.requests_per_minute)
 
     def _extract_response_text(self, response) -> str:
@@ -153,24 +139,8 @@ class GeminiClient:
         message: Union[str, List[Dict]],
         **generation_kwargs
     ) -> str:
-        """
-        Отправляет сообщение в Gemini и возвращает ответ.
-
-        Args:
-            message: Текст сообщения или список сообщений для диалога.
-                    Поддерживаются parts с inline_data для изображений.
-            **generation_kwargs: Параметры генерации (temperature, max_output_tokens, top_p, top_k, response_mime_type и т.д.)
-
-        Returns:
-            Текст ответа от модели
-
-        Raises:
-            Exception: Если все попытки запроса завершились неудачей
-        """
-        # Переключаем API ключ перед каждым запросом
         self._switch_api_key()
-        
-        # Полный вывод запроса в лог (без обрезки)
+
         def _format_payload(msg: Union[str, List[Dict]]) -> str:
             if isinstance(msg, str):
                 return msg
@@ -186,18 +156,15 @@ class GeminiClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                # Квота
                 self._wait_if_needed()
-                # Регистрируем запрос (попытка тоже учитывается)
                 self._record_request()
 
                 self.logger.info("🔄 Попытка %d/%d: отправка...", attempt, self.max_retries)
 
-                generation_config = None
-                if generation_kwargs:
-                    generation_config = genai.types.GenerationConfig(**generation_kwargs)
+                merged_kwargs = dict(self.default_generation_kwargs)
+                merged_kwargs.update(generation_kwargs or {})
+                generation_config = genai.types.GenerationConfig(**merged_kwargs) if merged_kwargs else None
 
-                # Отправка
                 if isinstance(message, str):
                     response = self.model.generate_content(
                         message,
@@ -209,10 +176,7 @@ class GeminiClient:
                         generation_config=generation_config
                     )
 
-                # Текст ответа
                 response_text = self._extract_response_text(response)
-
-                # Полный вывод ответа в лог (без обрезки)
                 self.logger.info("⬅ Ответ модели (полностью, %d симв.):\n%s", len(response_text), response_text)
 
                 return response_text

@@ -160,8 +160,8 @@ class NotebookTaskSplitter:
         example = {
             "segments": [
                 {"label": "info", "cell_indices": [0]},
-                {"label": "r_code", "cell_indices": [1, 2], "need_conclusion": True},
-                {"label": "conclusion", "cell_indices": [3]},
+                {"label": "r_code", "cell_indices": [1, 2], "need_conclusion": True, "rcode_target": 2},
+                {"label": "conclusion", "cell_indices": [3]}
             ]
         }
 
@@ -179,23 +179,30 @@ Md: Напиши код
 Code: Какой-то готовый к использованию код
 Code: Код с плейсхолдером # TODO
 
-Такой случай следует объединять в один сегмент r_code.
+Такой случай объединяй в один сегмент r_code.
 
 Требования:
 - Сегменты должны покрывать все {total_cells} ячеек без пропусков.
 - Сегменты не должны перекрываться.
 - Сегменты идут в порядке возрастания индексов.
-- Каждый сегмент — непрерывный диапазон по индексам (если внутри типа встречаются разрывы, разбей это на несколько сегментов одного и того же label).
+- Каждый сегмент — непрерывный диапазон по индексам.
 - Не создавай пустые сегменты.
-- Для сегментов 'n_code' и 'r_code' добавь булев флаг "need_conclusion": true/false — требуется ли после кода сделать текстовые выводы, если отдельной ячейки для выводов нет.
+
+Дополнительно для 'r_code':
+- Добавь целочисленное поле "rcode_target" — абсолютный индекс ячейки ноутбука, которую нужно дописать.
+- Значение rcode_target обязательно должно входить в массив cell_indices этого сегмента и указывать на ячейку типа code.
+- Если в сегменте несколько ячеек требуют правки, выбери последнюю из них.
+
+Для 'n_code' и 'r_code' добавь булев флаг "need_conclusion": true/false — требуется ли после кода сделать выводы, если отдельной ячейки для выводов нет.
 
 Формат ответа: верни строго JSON с ключом "segments", без комментариев, без markdown и без текста ячеек:
 {json.dumps(example, ensure_ascii=False, indent=2)}
 
 Где:
 - label ∈ ["info","n_code","r_code","math","conclusion"]
-- cell_indices — массив индексов ячеек (целые числа), образующих непрерывный диапазон.
-- need_conclusion — обязателен только для 'n_code'/'r_code'. Для остальных типов опусти или считаем false.
+- cell_indices — массив индексов ячеек (целые числа) в непрерывном диапазоне
+- need_conclusion — обязательно только для 'n_code'/'r_code'
+- rcode_target — обязателен только для 'r_code' и должен быть одним из cell_indices
 
 Ниже идет содержимое файла (.py) с маркерами ячеек. Выполни разметку, учитывая границы ячеек и их содержание.
 
@@ -224,21 +231,9 @@ Code: Код с плейсхолдером # TODO
 
         return data
 
-    def _normalize_and_cover_segments(
-        self, model_data: Dict[str, Any], total_cells: int
-    ) -> List[Dict[str, Any]]:
-        """
-        1) Валидация и нормализация:
-           - label должен быть допустимым
-           - индексы — int, в границах [0..total_cells-1]
-           - need_conclusion — bool для n_code/r_code, иначе False
-           - разбиваем на непрерывные диапазоны при необходимости
-        2) Сортировка по стартовому индексу
-        3) Проверка пересечений
-        4) Покрытие пропущенных ячеек сегментами info
-        """
+    def _normalize_and_cover_segments(self, model_data: Dict[str, Any], total_cells: int) -> List[Dict[str, Any]]:
         raw_segments = model_data["segments"]
-        normalized: List[Tuple[str, List[int], bool]] = []
+        normalized = []
 
         for i, seg in enumerate(raw_segments, start=1):
             if not isinstance(seg, dict):
@@ -248,18 +243,14 @@ Code: Код с плейсхолдером # TODO
             if label not in self.ALLOWED_LABELS:
                 raise ValueError(f"Недопустимый label '{label}' в segments[{i}].")
             if not isinstance(indices, list) or not indices:
-                raise ValueError(
-                    f"'cell_indices' должен быть непустым списком в segments[{i}]."
-                )
+                raise ValueError(f"'cell_indices' должен быть непустым списком в segments[{i}].")
 
             cleaned = []
             for x in indices:
                 if not isinstance(x, int):
                     raise ValueError(f"Индекс {x} не int в segments[{i}].")
                 if not (0 <= x < total_cells):
-                    raise ValueError(
-                        f"Индекс {x} вне диапазона [0..{total_cells - 1}] в segments[{i}]."
-                    )
+                    raise ValueError(f"Индекс {x} вне диапазона [0..{total_cells - 1}] в segments[{i}].")
                 cleaned.append(x)
 
             need_conclusion = False
@@ -270,58 +261,64 @@ Code: Код с плейсхолдером # TODO
                 else:
                     if nc in (0, 1):
                         need_conclusion = bool(nc)
-                        self.logger.warning(
-                            f"⚠ need_conclusion в segments[{i}] приведён к bool из {nc}."
-                        )
+                        self.logger.warning(f"⚠ need_conclusion в segments[{i}] приведён к bool из {nc}.")
                     elif isinstance(nc, str) and nc.lower() in ("true", "false"):
                         need_conclusion = nc.lower() == "true"
-                        self.logger.warning(
-                            f"⚠ need_conclusion в segments[{i}] приведён к bool из строки '{nc}'."
-                        )
+                        self.logger.warning(f"⚠ need_conclusion в segments[{i}] приведён к bool из строки '{nc}'.")
                     elif nc is None:
                         need_conclusion = False
                     else:
-                        raise ValueError(
-                            f"need_conclusion должен быть bool для n_code/r_code (segments[{i}])."
-                        )
+                        raise ValueError(f"need_conclusion должен быть bool для n_code/r_code (segments[{i}]).")
+
+            rcode_target = None
+            if label == "r_code":
+                rt = seg.get("rcode_target", None)
+                if rt is not None:
+                    if isinstance(rt, int) and (0 <= rt < total_cells):
+                        if rt in cleaned:
+                            rcode_target = rt
+                        else:
+                            self.logger.warning(f"⚠ rcode_target={rt} не входит в cell_indices в segments[{i}]. Поле будет опущено.")
+                    else:
+                        self.logger.warning(f"⚠ rcode_target некорректен в segments[{i}]. Поле будет опущено.")
 
             cleaned = sorted(set(cleaned))
             for rng in self._split_into_contiguous_runs(cleaned):
-                normalized.append((label, rng, need_conclusion))
+                rt_in_run = rcode_target if (rcode_target is not None and rcode_target in rng) else None
+                normalized.append((label, rng, need_conclusion, rt_in_run))
 
         normalized.sort(key=lambda x: x[1][0])
 
         occupied = set()
-        final_segments: List[Tuple[str, List[int], bool]] = []
-        for label, idxs, need_conclusion in normalized:
+        final_segments = []
+        for label, idxs, need_conclusion, rt in normalized:
             if any(i in occupied for i in idxs):
                 overlap = [i for i in idxs if i in occupied]
                 raise ValueError(f"Перекрывающиеся сегменты на индексах: {overlap}")
             for i in idxs:
                 occupied.add(i)
-            final_segments.append((label, idxs, need_conclusion))
+            final_segments.append((label, idxs, need_conclusion, rt))
 
         missing = [i for i in range(total_cells) if i not in occupied]
         if missing:
-            self.logger.warning(
-                f"⚠ Обнаружены пропущенные ячейки: {missing}. "
-                f"Будут добавлены сегменты 'info'."
-            )
+            self.logger.warning(f"⚠ Обнаружены пропущенные ячейки: {missing}. Будут добавлены сегменты 'info'.")
             info_runs = self._split_into_contiguous_runs(missing)
             for rng in info_runs:
-                final_segments.append(("info", rng, False))
+                final_segments.append(("info", rng, False, None))
             final_segments.sort(key=lambda x: x[1][0])
 
-        return [
-            {
+        result = []
+        for label, idxs, need_conclusion, rt in final_segments:
+            item = {
                 "label": label,
                 "cell_indices": idxs,
-                "need_conclusion": (
-                    need_conclusion if label in ("n_code", "r_code") else False
-                ),
+                "need_conclusion": need_conclusion if label in ("n_code", "r_code") else False,
             }
-            for label, idxs, need_conclusion in final_segments
-        ]
+            if label == "r_code" and rt is not None:
+                item["rcode_target"] = rt
+            result.append(item)
+
+        return result
 
     def _split_into_contiguous_runs(self, sorted_unique: List[int]) -> List[List[int]]:
         if not sorted_unique:
@@ -339,22 +336,19 @@ Code: Код с плейсхолдером # TODO
         runs.append(list(range(start, prev + 1)))
         return runs
 
-    def _build_result_segments(
-        self, segments: List[Dict[str, Any]], cells: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def _build_result_segments(self, segments: List[Dict[str, Any]], cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         result = []
         for seg in segments:
             idxs = seg["cell_indices"]
             seg_cells = [cells[i] for i in idxs]
             text = "\n\n".join(c["source"] for c in seg_cells)
-            result.append(
-                {
-                    "label": seg["label"],
-                    "text": text,
-                    "cells": seg_cells,
-                    "need_conclusion": bool(seg.get("need_conclusion", False))
-                    if seg["label"] in ("n_code", "r_code")
-                    else False,
-                }
-            )
+            item = {
+                "label": seg["label"],
+                "text": text,
+                "cells": seg_cells,
+                "need_conclusion": bool(seg.get("need_conclusion", False)) if seg["label"] in ("n_code", "r_code") else False,
+            }
+            if seg["label"] == "r_code" and "rcode_target" in seg:
+                item["rcode_target"] = seg["rcode_target"]
+            result.append(item)
         return result

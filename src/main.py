@@ -32,7 +32,11 @@ def main():
         api_key=API_KEY,
         model_name="gemini-2.5-pro",
         requests_per_minute=4,
-        max_retries=3
+        max_retries=3,
+        default_generation_kwargs={
+            "temperature": 1,
+            "top_p": 0.95,
+        }
     )
 
     splitter = NotebookTaskSplitter(
